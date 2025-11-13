@@ -49,7 +49,7 @@ if (!process.env.JWT_SECRET) {
 // =========================
 
 // Gestion CORS (local + Azure)
-const allowedOrigins = ['https://avo-hr-managment.azurewebsites.net/'];
+const allowedOrigins = ['https://avo-hr-managment.azurewebsites.net'];
 
 if (process.env.FRONTEND_URL) {
   allowedOrigins.push(process.env.FRONTEND_URL);
