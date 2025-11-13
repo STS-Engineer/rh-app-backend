@@ -14,13 +14,13 @@ const PORT = Number(process.env.PORT || 5000);
 // =========================
 
 const pool = new Pool({
-  user: process.env.DB_USER,
-  host: process.env.DB_HOST,
-  database: process.env.DB_NAME,
-  password: process.env.DB_PASSWORD,
+  user: 'administrationSTS',
+  host: 'avo-adb-002.postgres.database.azure.com',
+  database: 'rh_application',
+  password: 'St$@0987',
   port: Number(process.env.DB_PORT || 5432),
-  ssl: { require: true, rejectUnauthorized: false } // Azure PostgreSQL
-});
+  
+
 
 // =========================
 /* Logs de configuration */
