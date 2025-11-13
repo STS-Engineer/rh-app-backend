@@ -645,7 +645,101 @@ app.post('/api/employees', authenticateToken, async (req, res) => {
     }
   }
 });
+// =========================
+// Routes Demandes RH
+// =========================
 
+app.get('/api/demandes-rh', authenticateToken, async (req, res) => {
+  try {
+    console.log('📋 Récupération des demandes RH');
+
+    const { type, statut, dateDebut, dateFin } = req.query;
+    
+    let query = `
+      SELECT dr.*, 
+             e.nom as employe_nom, 
+             e.prenom as employe_prenom,
+             e.matricule as employe_matricule
+      FROM demande_rh dr
+      LEFT JOIN employees e ON dr.employe_id = e.id
+      WHERE 1=1
+    `;
+    let params = [];
+    let paramCount = 0;
+
+    // Filtres
+    if (type) {
+      paramCount++;
+      query += ` AND dr.type_demande = $${paramCount}`;
+      params.push(type);
+    }
+
+    if (statut) {
+      paramCount++;
+      query += ` AND dr.statut = $${paramCount}`;
+      params.push(statut);
+    }
+
+    if (dateDebut) {
+      paramCount++;
+      query += ` AND dr.date_depart >= $${paramCount}`;
+      params.push(dateDebut);
+    }
+
+    if (dateFin) {
+      paramCount++;
+      query += ` AND dr.date_depart <= $${paramCount}`;
+      params.push(dateFin);
+    }
+
+    // Tri par date de création (les plus récents en premier)
+    query += ' ORDER BY dr.created_at DESC';
+
+    const result = await pool.query(query, params);
+
+    console.log(`✅ ${result.rows.length} demandes RH récupérées`);
+    res.json(result.rows);
+  } catch (error) {
+    console.error('❌ Erreur récupération demandes RH:', error);
+    res.status(500).json({
+      error: 'Erreur lors de la récupération des demandes RH',
+      message: error.message
+    });
+  }
+});
+
+app.get('/api/demandes-rh/:id', authenticateToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+    console.log('📋 Récupération demande RH ID:', id);
+
+    const result = await pool.query(
+      `SELECT dr.*, 
+              e.nom as employe_nom, 
+              e.prenom as employe_prenom,
+              e.matricule as employe_matricule,
+              e.poste as employe_poste
+       FROM demande_rh dr
+       LEFT JOIN employees e ON dr.employe_id = e.id
+       WHERE dr.id = $1`,
+      [id]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({
+        error: 'Demande RH non trouvée'
+      });
+    }
+
+    res.json(result.rows[0]);
+  } catch (error) {
+    console.error('❌ Erreur récupération demande RH:', error);
+    res.status(500).json({
+      error: 'Erreur lors de la récupération de la demande RH',
+      message: error.message
+    });
+  }
+});
 // =========================
 // Routes fallback & erreurs
 // =========================
