@@ -1,3 +1,4 @@
+// server.js
 require('dotenv').config({ path: __dirname + '/.env' });
 
 const express = require('express');
@@ -14,16 +15,16 @@ const PORT = Number(process.env.PORT || 5000);
 // =========================
 
 const pool = new Pool({
-  user: 'administrationSTS',
-  host: 'avo-adb-002.postgres.database.azure.com',
-  database: 'rh_application',
-  password: 'St$@0987',
+  user: process.env.DB_USER,         // ex: administrationSTS
+  host: process.env.DB_HOST,         // ex: avo-adb-002.postgres.database.azure.com
+  database: process.env.DB_NAME,     // ex: rh_application
+  password: process.env.DB_PASSWORD, // ex: St$@0987
   port: Number(process.env.DB_PORT || 5432),
-  
-
+  ssl: { require: true, rejectUnauthorized: false } // Azure PostgreSQL
+});
 
 // =========================
-/* Logs de configuration */
+// Logs de configuration
 // =========================
 
 console.log('🔧 Configuration vérifiée:', {
@@ -51,7 +52,7 @@ if (!process.env.JWT_SECRET) {
 // Gestion CORS (local + Azure)
 const allowedOrigins = [
   'http://localhost:3000',
-  'https://avo-hr-managment.azurewebsites.net' // ⚠️ SANS slash final
+  'https://avo-hr-managment.azurewebsites.net'
 ];
 
 if (process.env.FRONTEND_URL && !allowedOrigins.includes(process.env.FRONTEND_URL)) {
@@ -59,7 +60,7 @@ if (process.env.FRONTEND_URL && !allowedOrigins.includes(process.env.FRONTEND_UR
 }
 
 const corsOptions = {
-  origin: function (origin, callback) {
+  origin(origin, callback) {
     // Autoriser les outils sans header Origin (Postman, curl…)
     if (!origin) return callback(null, true);
 
@@ -67,14 +68,14 @@ const corsOptions = {
       return callback(null, true);
     } else {
       console.warn('🚫 Origin non autorisée par CORS:', origin);
-      return callback(new Error('Not allowed by CORS'));
+      // false => pas d’erreur serveur, juste pas de headers CORS
+      return callback(null, false);
     }
   },
   credentials: true
 };
 
 app.use(cors(corsOptions));
-
 // Important pour les requêtes préflight OPTIONS (CORS)
 app.options('*', cors(corsOptions));
 
@@ -254,7 +255,6 @@ const authenticateToken = (req, res, next) => {
 // Fonctions utilitaires
 // =========================
 
-// Valider les URLs
 function isValidUrl(string) {
   try {
     new URL(string);
@@ -264,7 +264,6 @@ function isValidUrl(string) {
   }
 }
 
-// Générer des avatars par défaut basés sur les initiales
 function getDefaultAvatar(nom, prenom) {
   const initiales = (prenom.charAt(0) + nom.charAt(0)).toUpperCase();
   const colors = [
@@ -288,7 +287,6 @@ function getDefaultAvatar(nom, prenom) {
 // Routes Employés
 // =========================
 
-// Récupérer tous les employés actifs
 app.get('/api/employees', authenticateToken, async (req, res) => {
   try {
     console.log('👥 Récupération des employés actifs depuis la base de données');
@@ -310,7 +308,6 @@ app.get('/api/employees', authenticateToken, async (req, res) => {
   }
 });
 
-// Récupérer les employés archivés
 app.get('/api/employees/archives', authenticateToken, async (req, res) => {
   try {
     console.log('📁 Récupération des employés archivés');
@@ -332,7 +329,6 @@ app.get('/api/employees/archives', authenticateToken, async (req, res) => {
   }
 });
 
-// Recherche d'employés avec filtre de statut
 app.get('/api/employees/search', authenticateToken, async (req, res) => {
   try {
     const { q, statut = 'actif' } = req.query;
@@ -369,7 +365,6 @@ app.get('/api/employees/search', authenticateToken, async (req, res) => {
   }
 });
 
-// Récupérer un employé spécifique
 app.get('/api/employees/:id', authenticateToken, async (req, res) => {
   try {
     const { id } = req.params;
@@ -395,7 +390,6 @@ app.get('/api/employees/:id', authenticateToken, async (req, res) => {
   }
 });
 
-// Mettre à jour un employé
 app.put('/api/employees/:id', authenticateToken, async (req, res) => {
   try {
     const { id } = req.params;
@@ -418,13 +412,10 @@ app.put('/api/employees/:id', authenticateToken, async (req, res) => {
       date_depart
     } = req.body;
 
-    // Validation de l'URL de la photo
     let photoUrl = photo;
     if (photo && !isValidUrl(photo)) {
-      // Si ce n'est pas une URL valide, utiliser une image par défaut
       photoUrl = getDefaultAvatar(nom, prenom);
     } else if (!photo) {
-      // Si aucune photo n'est fournie, utiliser l'avatar par défaut
       photoUrl = getDefaultAvatar(nom, prenom);
     }
 
@@ -474,7 +465,6 @@ app.put('/api/employees/:id', authenticateToken, async (req, res) => {
   }
 });
 
-// Archiver un employé
 app.put('/api/employees/:id/archive', authenticateToken, async (req, res) => {
   try {
     const { id } = req.params;
@@ -512,7 +502,6 @@ app.put('/api/employees/:id/archive', authenticateToken, async (req, res) => {
   }
 });
 
-// Créer un nouvel employé
 app.post('/api/employees', authenticateToken, async (req, res) => {
   try {
     console.log('➕ Création nouvel employé:', req.body);
@@ -533,7 +522,6 @@ app.post('/api/employees', authenticateToken, async (req, res) => {
       dossier_rh
     } = req.body;
 
-    // Validation des champs requis
     if (
       !matricule ||
       !nom ||
@@ -550,7 +538,6 @@ app.post('/api/employees', authenticateToken, async (req, res) => {
       });
     }
 
-    // Générer une photo par défaut si non fournie
     let photoUrl = photo;
     if (!photoUrl) {
       photoUrl = `https://ui-avatars.com/api/?name=${prenom}+${nom}&background=3498db&color=fff&size=150`;
@@ -586,7 +573,6 @@ app.post('/api/employees', authenticateToken, async (req, res) => {
     console.error('❌ Erreur création employé:', error);
 
     if (error.code === '23505') {
-      // Violation de contrainte unique
       if (error.constraint === 'employees_matricule_key') {
         res.status(400).json({
           error: 'Le matricule existe déjà'
@@ -613,7 +599,6 @@ app.post('/api/employees', authenticateToken, async (req, res) => {
 // Routes fallback & erreurs
 // =========================
 
-// Route de fallback
 app.use('*', (req, res) => {
   console.log('❌ Route non trouvée:', req.originalUrl);
   res.status(404).json({
@@ -632,7 +617,6 @@ app.use('*', (req, res) => {
   });
 });
 
-// Gestionnaire d'erreurs global
 app.use((err, req, res, next) => {
   console.error('💥 Erreur serveur:', err);
   res.status(500).json({
@@ -665,7 +649,6 @@ app.listen(PORT, () => {
   console.log('='.repeat(60) + '\n');
 });
 
-// Gestion de la fermeture propre
 process.on('SIGINT', async () => {
   console.log('\n🛑 Arrêt du serveur RH...');
   await pool.end();
