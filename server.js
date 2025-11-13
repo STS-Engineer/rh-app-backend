@@ -14,25 +14,40 @@ const PORT = Number(process.env.PORT || 5000);
 // Configuration de la base
 // =========================
 
-const pool = new Pool({
-  user: process.env.DB_USER,         // ex: administrationSTS
-  host: process.env.DB_HOST,         // ex: avo-adb-002.postgres.database.azure.com
-  database: process.env.DB_NAME,     // ex: rh_application
-  password: process.env.DB_PASSWORD, // ex: St$@0987
+const dbConfig = {
+  user: process.env.DB_USER,
+  host: process.env.DB_HOST,
+  database: process.env.DB_NAME,
+  password: process.env.DB_PASSWORD,
   port: Number(process.env.DB_PORT || 5432),
-  ssl: { require: true, rejectUnauthorized: false } // Azure PostgreSQL
+  ssl: { require: true, rejectUnauthorized: false },
+  connectionTimeoutMillis: 10000, // 10 secondes
+  idleTimeoutMillis: 30000
+};
+
+console.log('🔧 Configuration de la base de données:', {
+  user: dbConfig.user,
+  host: dbConfig.host,
+  database: dbConfig.database,
+  port: dbConfig.port,
+  ssl: 'Activé',
+  password: dbConfig.password ? '✅ Présent' : '❌ Manquant'
 });
+
+const pool = new Pool(dbConfig);
 
 // =========================
 // Logs de configuration
 // =========================
 
-console.log('🔧 Configuration vérifiée:', {
-  DB_USER: process.env.DB_USER,
-  DB_HOST: process.env.DB_HOST,
-  DB_NAME: process.env.DB_NAME,
+console.log('🔧 Variables d\'environnement:', {
+  DB_USER: process.env.DB_USER || '❌ Manquant',
+  DB_HOST: process.env.DB_HOST || '❌ Manquant',
+  DB_NAME: process.env.DB_NAME || '❌ Manquant',
+  DB_PORT: process.env.DB_PORT || '5432 (défaut)',
   JWT_SECRET: process.env.JWT_SECRET ? '✅ Défini' : '❌ Manquant',
-  FRONTEND_URL: process.env.FRONTEND_URL || '❌ Non défini'
+  FRONTEND_URL: process.env.FRONTEND_URL || '❌ Non défini',
+  NODE_ENV: process.env.NODE_ENV || 'development'
 });
 
 // Vérification et définition de JWT_SECRET
@@ -68,7 +83,6 @@ const corsOptions = {
       return callback(null, true);
     } else {
       console.warn('🚫 Origin non autorisée par CORS:', origin);
-      // false => pas d’erreur serveur, juste pas de headers CORS
       return callback(null, false);
     }
   },
@@ -76,9 +90,7 @@ const corsOptions = {
 };
 
 app.use(cors(corsOptions));
-// Important pour les requêtes préflight OPTIONS (CORS)
 app.options('*', cors(corsOptions));
-
 app.use(express.json());
 
 // =========================
@@ -89,11 +101,26 @@ pool
   .connect()
   .then((client) => {
     console.log('✅ Connexion à PostgreSQL réussie pour RH Application');
-    client.release();
+    return client.query('SELECT version(), current_database()');
+  })
+  .then((result) => {
+    console.log('📊 Base de données:', result.rows[0]);
+    pool.query('SELECT 1').then(() => console.log('✅ Pool PostgreSQL opérationnel'));
   })
   .catch((err) => {
-    console.error('❌ Erreur de connexion à PostgreSQL:', err);
+    console.error('❌ ERREUR DE CONNEXION PostgreSQL:', {
+      message: err.message,
+      code: err.code,
+      host: process.env.DB_HOST,
+      port: process.env.DB_PORT,
+      stack: err.stack
+    });
   });
+
+// Gestion des erreurs de pool
+pool.on('error', (err) => {
+  console.error('❌ Erreur inattendue du pool PostgreSQL:', err);
+});
 
 // =========================
 // ROUTES RH
@@ -105,6 +132,7 @@ app.get('/', (req, res) => {
     message: '🚀 API RH Manager - Connecté à Azure PostgreSQL',
     timestamp: new Date().toISOString(),
     database: 'Azure PostgreSQL',
+    environment: process.env.NODE_ENV || 'development',
     endpoints: [
       'GET  /api/health',
       'POST /api/auth/login',
@@ -112,7 +140,8 @@ app.get('/', (req, res) => {
       'GET  /api/employees/archives',
       'GET  /api/employees/search?q=nom',
       'PUT  /api/employees/:id',
-      'PUT  /api/employees/:id/archive'
+      'PUT  /api/employees/:id/archive',
+      'POST /api/employees'
     ]
   });
 });
@@ -120,9 +149,15 @@ app.get('/', (req, res) => {
 // Route de santé
 app.get('/api/health', async (req, res) => {
   try {
+    console.log('🏥 Health check - Tentative de connexion à la base...');
+    
     const client = await pool.connect();
+    console.log('✅ Client connecté');
+    
     const result = await client.query('SELECT version(), current_database()');
     client.release();
+    
+    console.log('✅ Requête exécutée avec succès');
 
     res.json({
       status: 'OK ✅',
@@ -130,16 +165,31 @@ app.get('/api/health', async (req, res) => {
       database: {
         connected: true,
         version: result.rows[0].version,
-        name: result.rows[0].current_database
+        name: result.rows[0].current_database,
+        host: process.env.DB_HOST,
+        port: process.env.DB_PORT
       },
       jwt: process.env.JWT_SECRET ? 'Configuré' : 'Utilisation fallback',
+      environment: process.env.NODE_ENV || 'development',
       timestamp: new Date().toISOString()
     });
   } catch (error) {
+    console.error('❌ Health check échoué:', {
+      message: error.message,
+      code: error.code,
+      stack: error.stack
+    });
+    
     res.status(500).json({
       status: 'Error',
       message: 'Erreur base de données',
-      error: error.message
+      error: error.message,
+      code: error.code,
+      details: {
+        host: process.env.DB_HOST,
+        port: process.env.DB_PORT,
+        database: process.env.DB_NAME
+      }
     });
   }
 });
@@ -148,10 +198,9 @@ app.get('/api/health', async (req, res) => {
 // Authentification
 // =========================
 
-// Route de login avec vérification en base de données
 app.post('/api/auth/login', async (req, res) => {
   try {
-    console.log('🔐 Tentative de login:', req.body);
+    console.log('🔐 Tentative de login:', { email: req.body.email });
 
     const { email, password } = req.body;
 
@@ -162,71 +211,73 @@ app.post('/api/auth/login', async (req, res) => {
       });
     }
 
-    // Rechercher l'utilisateur dans la base de données
-    const userResult = await pool.query('SELECT * FROM users WHERE email = $1', [
-      email
-    ]);
+    // Vérifier la connexion à la base
+    const client = await pool.connect();
+    console.log('✅ Connexion pool établie pour login');
 
-    if (userResult.rows.length === 0) {
-      console.log('❌ Utilisateur non trouvé:', email);
-      return res.status(401).json({
-        success: false,
-        message: 'Email ou mot de passe incorrect'
-      });
-    }
-
-    const user = userResult.rows[0];
-    console.log('👤 Utilisateur trouvé dans la base:', user.email);
-
-    // Vérifier le mot de passe
-    const isPasswordValid = await bcrypt.compare(password, user.password);
-
-    if (isPasswordValid) {
-      console.log('✅ Mot de passe correct');
-
-      // Vérifier que JWT_SECRET est disponible
-      if (!JWT_SECRET) {
-        throw new Error('JWT_SECRET non configuré');
-      }
-
-      const token = jwt.sign(
-        {
-          userId: user.id,
-          email: user.email
-        },
-        JWT_SECRET,
-        { expiresIn: '24h' }
+    try {
+      // Rechercher l'utilisateur
+      const userResult = await client.query(
+        'SELECT * FROM users WHERE email = $1',
+        [email]
       );
 
-      res.json({
-        success: true,
-        token: token,
-        user: {
-          id: user.id,
-          email: user.email
-        }
-      });
-    } else {
-      console.log('❌ Mot de passe incorrect');
-      res.status(401).json({
-        success: false,
-        message: 'Email ou mot de passe incorrect'
-      });
+      if (userResult.rows.length === 0) {
+        console.log('❌ Utilisateur non trouvé:', email);
+        return res.status(401).json({
+          success: false,
+          message: 'Email ou mot de passe incorrect'
+        });
+      }
+
+      const user = userResult.rows[0];
+      console.log('👤 Utilisateur trouvé:', user.email);
+
+      // Vérifier le mot de passe
+      const isPasswordValid = await bcrypt.compare(password, user.password);
+
+      if (isPasswordValid) {
+        console.log('✅ Mot de passe correct');
+
+        const token = jwt.sign(
+          {
+            userId: user.id,
+            email: user.email
+          },
+          JWT_SECRET,
+          { expiresIn: '24h' }
+        );
+
+        res.json({
+          success: true,
+          token: token,
+          user: {
+            id: user.id,
+            email: user.email
+          }
+        });
+      } else {
+        console.log('❌ Mot de passe incorrect');
+        res.status(401).json({
+          success: false,
+          message: 'Email ou mot de passe incorrect'
+        });
+      }
+    } finally {
+      client.release();
     }
   } catch (error) {
-    console.error('💥 Erreur lors du login:', error.message);
+    console.error('💥 Erreur lors du login:', {
+      message: error.message,
+      code: error.code,
+      stack: error.stack
+    });
 
-    if (error.message.includes('JWT_SECRET')) {
-      res.status(500).json({
-        success: false,
-        message: 'Erreur de configuration serveur - JWT non configuré'
-      });
-    } else {
-      res.status(500).json({
-        success: false,
-        message: 'Erreur serveur lors de la connexion'
-      });
-    }
+    res.status(500).json({
+      success: false,
+      message: 'Erreur serveur lors de la connexion',
+      error: error.message
+    });
   }
 });
 
@@ -289,7 +340,7 @@ function getDefaultAvatar(nom, prenom) {
 
 app.get('/api/employees', authenticateToken, async (req, res) => {
   try {
-    console.log('👥 Récupération des employés actifs depuis la base de données');
+    console.log('👥 Récupération des employés actifs');
 
     const result = await pool.query(`
       SELECT * FROM employees 
@@ -332,7 +383,7 @@ app.get('/api/employees/archives', authenticateToken, async (req, res) => {
 app.get('/api/employees/search', authenticateToken, async (req, res) => {
   try {
     const { q, statut = 'actif' } = req.query;
-    console.log('🔍 Recherche employés avec terme:', q, 'statut:', statut);
+    console.log('🔍 Recherche employés:', { q, statut });
 
     let query = 'SELECT * FROM employees WHERE ';
     let params = [];
@@ -354,7 +405,7 @@ app.get('/api/employees/search', authenticateToken, async (req, res) => {
 
     const result = await pool.query(query, params);
 
-    console.log(`✅ ${result.rows.length} employés trouvés pour "${q}"`);
+    console.log(`✅ ${result.rows.length} employés trouvés`);
     res.json(result.rows);
   } catch (error) {
     console.error('❌ Erreur recherche employés:', error);
@@ -454,7 +505,7 @@ app.put('/api/employees/:id', authenticateToken, async (req, res) => {
       });
     }
 
-    console.log('✅ Employé mis à jour avec succès');
+    console.log('✅ Employé mis à jour');
     res.json(result.rows[0]);
   } catch (error) {
     console.error('❌ Erreur mise à jour employé:', error);
@@ -491,10 +542,10 @@ app.put('/api/employees/:id/archive', authenticateToken, async (req, res) => {
       });
     }
 
-    console.log('✅ Employé archivé avec succès');
+    console.log('✅ Employé archivé');
     res.json(result.rows[0]);
   } catch (error) {
-    console.error("❌ Erreur archivage employé:", error);
+    console.error("❌ Erreur archivage:", error);
     res.status(500).json({
       error: "Erreur lors de l'archivage de l'employé",
       message: error.message
@@ -504,7 +555,7 @@ app.put('/api/employees/:id/archive', authenticateToken, async (req, res) => {
 
 app.post('/api/employees', authenticateToken, async (req, res) => {
   try {
-    console.log('➕ Création nouvel employé:', req.body);
+    console.log('➕ Création nouvel employé');
 
     const {
       matricule,
@@ -567,7 +618,7 @@ app.post('/api/employees', authenticateToken, async (req, res) => {
       ]
     );
 
-    console.log('✅ Nouvel employé créé avec ID:', result.rows[0].id);
+    console.log('✅ Employé créé, ID:', result.rows[0].id);
     res.json(result.rows[0]);
   } catch (error) {
     console.error('❌ Erreur création employé:', error);
@@ -600,20 +651,9 @@ app.post('/api/employees', authenticateToken, async (req, res) => {
 // =========================
 
 app.use('*', (req, res) => {
-  console.log('❌ Route non trouvée:', req.originalUrl);
   res.status(404).json({
     error: 'Route non trouvée',
-    path: req.originalUrl,
-    availableEndpoints: [
-      'GET /',
-      'GET /api/health',
-      'POST /api/auth/login',
-      'GET /api/employees',
-      'GET /api/employees/archives',
-      'GET /api/employees/search?q=nom',
-      'PUT /api/employees/:id',
-      'PUT /api/employees/:id/archive'
-    ]
+    path: req.originalUrl
   });
 });
 
@@ -631,26 +671,18 @@ app.use((err, req, res, next) => {
 
 app.listen(PORT, () => {
   console.log('\n' + '='.repeat(60));
-  console.log('🚀 SERVEUR RH DÉMARRÉ AVEC SUCCÈS!');
+  console.log('🚀 SERVEUR RH DÉMARRÉ');
   console.log('='.repeat(60));
   console.log(`📍 Port: ${PORT}`);
   console.log(`🌐 URL: http://localhost:${PORT}`);
-  console.log(`🗄️  Base: ${process.env.DB_NAME}`);
-  console.log(`🔐 JWT: ${process.env.JWT_SECRET ? '✅ Configuré' : '⚠️  Fallback'}`);
-  console.log('');
-  console.log('📋 ENDPOINTS DISPONIBLES:');
-  console.log(`   ✅ GET  http://localhost:${PORT}/`);
-  console.log(`   ✅ GET  http://localhost:${PORT}/api/health`);
-  console.log(`   ✅ POST http://localhost:${PORT}/api/auth/login`);
-  console.log(`   ✅ GET  http://localhost:${PORT}/api/employees`);
-  console.log(`   ✅ GET  http://localhost:${PORT}/api/employees/archives`);
-  console.log(`   ✅ PUT  http://localhost:${PORT}/api/employees/:id`);
-  console.log(`   ✅ PUT  http://localhost:${PORT}/api/employees/:id/archive`);
+  console.log(`🗄️  Base: ${process.env.DB_NAME} @ ${process.env.DB_HOST}`);
+  console.log(`🔐 JWT: ${process.env.JWT_SECRET ? '✅' : '⚠️'}`);
+  console.log(`🌍 ENV: ${process.env.NODE_ENV || 'development'}`);
   console.log('='.repeat(60) + '\n');
 });
 
 process.on('SIGINT', async () => {
-  console.log('\n🛑 Arrêt du serveur RH...');
+  console.log('\n🛑 Arrêt du serveur...');
   await pool.end();
   process.exit(0);
 });
