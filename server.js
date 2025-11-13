@@ -23,7 +23,7 @@ const pool = new Pool({
 });
 
 // =========================
-// Logs de configuration
+/* Logs de configuration */
 // =========================
 
 console.log('🔧 Configuration vérifiée:', {
@@ -49,28 +49,34 @@ if (!process.env.JWT_SECRET) {
 // =========================
 
 // Gestion CORS (local + Azure)
-const allowedOrigins = ['https://avo-hr-managment.azurewebsites.net'];
+const allowedOrigins = [
+  'http://localhost:3000',
+  'https://avo-hr-managment.azurewebsites.net' // ⚠️ SANS slash final
+];
 
-if (process.env.FRONTEND_URL) {
+if (process.env.FRONTEND_URL && !allowedOrigins.includes(process.env.FRONTEND_URL)) {
   allowedOrigins.push(process.env.FRONTEND_URL);
 }
 
-app.use(
-  cors({
-    origin: function (origin, callback) {
-      // Autoriser les outils sans header Origin (Postman, curl…)
-      if (!origin) return callback(null, true);
+const corsOptions = {
+  origin: function (origin, callback) {
+    // Autoriser les outils sans header Origin (Postman, curl…)
+    if (!origin) return callback(null, true);
 
-      if (allowedOrigins.includes(origin)) {
-        return callback(null, true);
-      } else {
-        console.warn('🚫 Origin non autorisée par CORS:', origin);
-        return callback(new Error('Not allowed by CORS'));
-      }
-    },
-    credentials: true
-  })
-);
+    if (allowedOrigins.includes(origin)) {
+      return callback(null, true);
+    } else {
+      console.warn('🚫 Origin non autorisée par CORS:', origin);
+      return callback(new Error('Not allowed by CORS'));
+    }
+  },
+  credentials: true
+};
+
+app.use(cors(corsOptions));
+
+// Important pour les requêtes préflight OPTIONS (CORS)
+app.options('*', cors(corsOptions));
 
 app.use(express.json());
 
