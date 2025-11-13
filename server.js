@@ -141,7 +141,9 @@ app.get('/', (req, res) => {
       'GET  /api/employees/search?q=nom',
       'PUT  /api/employees/:id',
       'PUT  /api/employees/:id/archive',
-      'POST /api/employees'
+      'POST /api/employees',
+      'GET  /api/demandes-rh',
+      'GET  /api/debug/demandes-rh'
     ]
   });
 });
@@ -645,13 +647,14 @@ app.post('/api/employees', authenticateToken, async (req, res) => {
     }
   }
 });
+
 // =========================
 // Routes Demandes RH
 // =========================
 
 app.get('/api/demandes-rh', authenticateToken, async (req, res) => {
   try {
-    console.log('📋 Récupération des demandes RH');
+    console.log('📋 Récupération des demandes RH - Query params:', req.query);
 
     const { type, statut, dateDebut, dateFin } = req.query;
     
@@ -695,15 +698,76 @@ app.get('/api/demandes-rh', authenticateToken, async (req, res) => {
     // Tri par date de création (les plus récents en premier)
     query += ' ORDER BY dr.created_at DESC';
 
+    console.log('📝 Requête SQL:', query);
+    console.log('📝 Paramètres:', params);
+
     const result = await pool.query(query, params);
 
     console.log(`✅ ${result.rows.length} demandes RH récupérées`);
+    
+    // Log les premières demandes pour vérification
+    if (result.rows.length > 0) {
+      console.log('📄 Exemple de demandes:', result.rows.slice(0, 2));
+    }
+
     res.json(result.rows);
   } catch (error) {
     console.error('❌ Erreur récupération demandes RH:', error);
     res.status(500).json({
       error: 'Erreur lors de la récupération des demandes RH',
-      message: error.message
+      message: error.message,
+      details: error.detail
+    });
+  }
+});
+
+// Route de debug pour vérifier les données demande_rh
+app.get('/api/debug/demandes-rh', authenticateToken, async (req, res) => {
+  try {
+    console.log('🐛 Debug: Vérification directe table demande_rh');
+    
+    // Test 1: Compter le nombre total de demandes
+    const countResult = await pool.query('SELECT COUNT(*) as total FROM demande_rh');
+    console.log('📊 Total demandes dans la table:', countResult.rows[0].total);
+    
+    // Test 2: Récupérer quelques demandes avec toutes les colonnes
+    const sampleResult = await pool.query(`
+      SELECT * FROM demande_rh 
+      ORDER BY created_at DESC 
+      LIMIT 5
+    `);
+    
+    console.log('📄 Échantillon de demandes:', JSON.stringify(sampleResult.rows, null, 2));
+    
+    // Test 3: Vérifier la jointure avec employees
+    const joinResult = await pool.query(`
+      SELECT 
+        dr.id,
+        dr.type_demande,
+        dr.statut,
+        dr.titre,
+        e.nom as employe_nom,
+        e.prenom as employe_prenom
+      FROM demande_rh dr
+      LEFT JOIN employees e ON dr.employe_id = e.id
+      LIMIT 5
+    `);
+    
+    console.log('🔗 Test jointure:', JSON.stringify(joinResult.rows, null, 2));
+
+    res.json({
+      total_demandes: parseInt(countResult.rows[0].total),
+      echantillon: sampleResult.rows,
+      jointure_test: joinResult.rows,
+      message: `✅ Debug réussi - ${countResult.rows[0].total} demandes trouvées`
+    });
+    
+  } catch (error) {
+    console.error('❌ Erreur debug demandes RH:', error);
+    res.status(500).json({
+      error: 'Erreur debug',
+      message: error.message,
+      detail: error.detail
     });
   }
 });
@@ -740,6 +804,7 @@ app.get('/api/demandes-rh/:id', authenticateToken, async (req, res) => {
     });
   }
 });
+
 // =========================
 // Routes fallback & erreurs
 // =========================
