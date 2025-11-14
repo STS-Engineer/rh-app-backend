@@ -1,4 +1,4 @@
-// server.js
+// server.js 
 require('dotenv').config({ path: __dirname + '/.env' });
 
 const express = require('express');
@@ -142,13 +142,7 @@ app.get('/', (req, res) => {
       'PUT  /api/employees/:id',
       'PUT  /api/employees/:id/archive',
       'POST /api/employees',
-      'GET  /api/demandes',
-      'GET  /api/demandes/:id',
-      'POST /api/demandes',
-      'PUT  /api/demandes/:id',
-      'PUT  /api/demandes/:id/approuver',
-      'PUT  /api/demandes/:id/rejeter',
-      'DELETE /api/demandes/:id'
+      'GET  /api/demandes-rh'
     ]
   });
 });
@@ -657,297 +651,30 @@ app.post('/api/employees', authenticateToken, async (req, res) => {
 // Routes Demandes RH
 // =========================
 
-// Récupérer toutes les demandes
-app.get('/api/demandes', authenticateToken, async (req, res) => {
+app.get('/api/demandes-rh', authenticateToken, async (req, res) => {
   try {
-    console.log('📋 Récupération des demandes RH');
+    console.log('📝 Récupération des demandes RH');
 
     const result = await pool.query(`
       SELECT 
         d.*,
-        CONCAT(e.prenom, ' ', e.nom) as employe_nom
+        e.nom,
+        e.prenom,
+        e.poste,
+        e.site_dep
       FROM demande_rh d
       LEFT JOIN employees e ON d.employe_id = e.id
-      ORDER BY d.created_at DESC
+      ORDER BY 
+        d.created_at DESC NULLS LAST,
+        d.id DESC
     `);
 
-    console.log(`✅ ${result.rows.length} demandes récupérées`);
+    console.log(`✅ ${result.rows.length} demandes RH récupérées`);
     res.json(result.rows);
   } catch (error) {
-    console.error('❌ Erreur récupération demandes:', error);
+    console.error('❌ Erreur récupération demandes RH:', error);
     res.status(500).json({
-      error: 'Erreur lors de la récupération des demandes',
-      message: error.message
-    });
-  }
-});
-
-// Récupérer une demande par ID
-app.get('/api/demandes/:id', authenticateToken, async (req, res) => {
-  try {
-    const { id } = req.params;
-    console.log('📄 Récupération demande ID:', id);
-
-    const result = await pool.query(`
-      SELECT 
-        d.*,
-        CONCAT(e.prenom, ' ', e.nom) as employe_nom,
-        e.photo as employe_photo
-      FROM demande_rh d
-      LEFT JOIN employees e ON d.employe_id = e.id
-      WHERE d.id = $1
-    `, [id]);
-
-    if (result.rows.length === 0) {
-      return res.status(404).json({
-        error: 'Demande non trouvée'
-      });
-    }
-
-    res.json(result.rows[0]);
-  } catch (error) {
-    console.error('❌ Erreur récupération demande:', error);
-    res.status(500).json({
-      error: 'Erreur lors de la récupération de la demande',
-      message: error.message
-    });
-  }
-});
-
-// Créer une nouvelle demande
-app.post('/api/demandes', authenticateToken, async (req, res) => {
-  try {
-    console.log('➕ Création nouvelle demande RH');
-
-    const {
-      employe_id,
-      type_demande,
-      titre,
-      type_conge,
-      type_conge_autre,
-      date_depart,
-      date_retour,
-      heure_depart,
-      heure_retour,
-      demi_journee,
-      frais_deplacement,
-      statut = 'en_attente'
-    } = req.body;
-
-    if (!employe_id || !type_demande || !titre) {
-      return res.status(400).json({
-        error: 'Les champs employe_id, type_demande et titre sont obligatoires'
-      });
-    }
-
-    const result = await pool.query(
-      `INSERT INTO demande_rh 
-      (employe_id, type_demande, titre, type_conge, type_conge_autre, 
-       date_depart, date_retour, heure_depart, heure_retour, demi_journee, 
-       frais_deplacement, statut, created_at, updated_at) 
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-      RETURNING *`,
-      [
-        employe_id,
-        type_demande,
-        titre,
-        type_conge || null,
-        type_conge_autre || null,
-        date_depart || null,
-        date_retour || null,
-        heure_depart || null,
-        heure_retour || null,
-        demi_journee || false,
-        frais_deplacement || null,
-        statut
-      ]
-    );
-
-    console.log('✅ Demande créée, ID:', result.rows[0].id);
-    res.json(result.rows[0]);
-  } catch (error) {
-    console.error('❌ Erreur création demande:', error);
-    res.status(500).json({
-      error: 'Erreur lors de la création de la demande',
-      message: error.message
-    });
-  }
-});
-
-// Approuver une demande
-app.put('/api/demandes/:id/approuver', authenticateToken, async (req, res) => {
-  try {
-    const { id } = req.params;
-    const { niveau } = req.body; // niveau 1 ou 2
-
-    console.log(`✓ Approbation demande ID: ${id} par responsable ${niveau}`);
-
-    let updateQuery;
-    if (niveau === 1) {
-      updateQuery = `
-        UPDATE demande_rh 
-        SET approuve_responsable1 = true,
-            statut = CASE 
-              WHEN approuve_responsable2 = true THEN 'approuve'
-              ELSE 'en_cours'
-            END,
-            updated_at = CURRENT_TIMESTAMP
-        WHERE id = $1
-        RETURNING *
-      `;
-    } else if (niveau === 2) {
-      updateQuery = `
-        UPDATE demande_rh 
-        SET approuve_responsable2 = true,
-            statut = CASE 
-              WHEN approuve_responsable1 = true THEN 'approuve'
-              ELSE 'en_cours'
-            END,
-            updated_at = CURRENT_TIMESTAMP
-        WHERE id = $1
-        RETURNING *
-      `;
-    } else {
-      return res.status(400).json({
-        error: 'Niveau d\'approbation invalide (1 ou 2)'
-      });
-    }
-
-    const result = await pool.query(updateQuery, [id]);
-
-    if (result.rows.length === 0) {
-      return res.status(404).json({
-        error: 'Demande non trouvée'
-      });
-    }
-
-    console.log('✅ Demande approuvée');
-    res.json(result.rows[0]);
-  } catch (error) {
-    console.error('❌ Erreur approbation demande:', error);
-    res.status(500).json({
-      error: "Erreur lors de l'approbation de la demande",
-      message: error.message
-    });
-  }
-});
-
-// Rejeter une demande
-app.put('/api/demandes/:id/rejeter', authenticateToken, async (req, res) => {
-  try {
-    const { id } = req.params;
-    const { commentaire_refus } = req.body;
-
-    console.log('✕ Rejet demande ID:', id);
-
-    const result = await pool.query(
-      `UPDATE demande_rh 
-       SET statut = 'rejete',
-           commentaire_refus = $1,
-           updated_at = CURRENT_TIMESTAMP
-       WHERE id = $2
-       RETURNING *`,
-      [commentaire_refus, id]
-    );
-
-    if (result.rows.length === 0) {
-      return res.status(404).json({
-        error: 'Demande non trouvée'
-      });
-    }
-
-    console.log('✅ Demande rejetée');
-    res.json(result.rows[0]);
-  } catch (error) {
-    console.error('❌ Erreur rejet demande:', error);
-    res.status(500).json({
-      error: 'Erreur lors du rejet de la demande',
-      message: error.message
-    });
-  }
-});
-
-// Mettre à jour une demande
-app.put('/api/demandes/:id', authenticateToken, async (req, res) => {
-  try {
-    const { id } = req.params;
-    console.log('✏️ Mise à jour demande ID:', id);
-
-    const {
-      titre,
-      type_demande,
-      type_conge,
-      type_conge_autre,
-      date_depart,
-      date_retour,
-      heure_depart,
-      heure_retour,
-      demi_journee,
-      frais_deplacement
-    } = req.body;
-
-    const result = await pool.query(
-      `UPDATE demande_rh 
-       SET titre = $1, type_demande = $2, type_conge = $3, type_conge_autre = $4,
-           date_depart = $5, date_retour = $6, heure_depart = $7, heure_retour = $8,
-           demi_journee = $9, frais_deplacement = $10, updated_at = CURRENT_TIMESTAMP
-       WHERE id = $11
-       RETURNING *`,
-      [
-        titre,
-        type_demande,
-        type_conge,
-        type_conge_autre,
-        date_depart,
-        date_retour,
-        heure_depart,
-        heure_retour,
-        demi_journee,
-        frais_deplacement,
-        id
-      ]
-    );
-
-    if (result.rows.length === 0) {
-      return res.status(404).json({
-        error: 'Demande non trouvée'
-      });
-    }
-
-    console.log('✅ Demande mise à jour');
-    res.json(result.rows[0]);
-  } catch (error) {
-    console.error('❌ Erreur mise à jour demande:', error);
-    res.status(500).json({
-      error: 'Erreur lors de la mise à jour de la demande',
-      message: error.message
-    });
-  }
-});
-
-// Supprimer une demande
-app.delete('/api/demandes/:id', authenticateToken, async (req, res) => {
-  try {
-    const { id } = req.params;
-    console.log('🗑️ Suppression demande ID:', id);
-
-    const result = await pool.query(
-      'DELETE FROM demande_rh WHERE id = $1 RETURNING *',
-      [id]
-    );
-
-    if (result.rows.length === 0) {
-      return res.status(404).json({
-        error: 'Demande non trouvée'
-      });
-    }
-
-    console.log('✅ Demande supprimée');
-    res.json({ message: 'Demande supprimée avec succès' });
-  } catch (error) {
-    console.error('❌ Erreur suppression demande:', error);
-    res.status(500).json({
-      error: 'Erreur lors de la suppression de la demande',
+      error: 'Erreur lors de la récupération des demandes RH',
       message: error.message
     });
   }
