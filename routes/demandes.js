@@ -73,21 +73,36 @@ router.get('/', authenticateToken, async (req, res) => {
     const result = await pool.query(query, params);
 
     // Count pour la pagination
-    let countQuery = `SELECT COUNT(*) FROM demande_rh d WHERE 1=1`;
-    const countParams = [];
-    let countParamCount = 0;
+let countQuery = `SELECT COUNT(*) FROM demande_rh d WHERE 1=1`;
+const countParams = [];
+let countParamCount = 0;
 
-    if (type_demande) {
-      countParamCount++;
-      countQuery += ` AND d.type_demande = $${countParamCount}`;
-      countParams.push(type_demande);
-    }
-
-    if (statut) {
-      countParamCount++;
-      countQuery += ` AND d.statut = $${countParamCount}`;
-      countParams.push(statut);
-    }
+  if (type_demande) {
+    countParamCount++;
+    countQuery += ` AND d.type_demande = $${countParamCount}`;
+    countParams.push(type_demande);
+  }
+  
+  if (statut) {
+    countParamCount++;
+    countQuery += ` AND d.statut = $${countParamCount}`;
+    countParams.push(statut);
+  }
+  
+  if (employe_id) {
+    countParamCount++;
+    countQuery += ` AND d.employe_id = $${countParamCount}`;
+    countParams.push(employe_id);
+  }
+  
+  if (date_debut && date_fin) {
+    countParamCount++;
+    countQuery += ` AND d.date_depart BETWEEN $${countParamCount}`;
+    countParams.push(date_debut);
+    countParamCount++;
+    countQuery += ` AND $${countParamCount}`;
+    countParams.push(date_fin);
+  }
 
     const countResult = await pool.query(countQuery, countParams);
     const total = parseInt(countResult.rows[0].count);
