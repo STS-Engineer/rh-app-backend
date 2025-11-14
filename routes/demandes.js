@@ -43,8 +43,8 @@ router.get('/', authenticateToken, async (req, res) => {
         e.poste as employe_poste,
         e.photo as employe_photo,
         e.matricule as employe_matricule,
-        e.email_responsable1,
-        e.email_responsable2
+        e.mail_responsable1,  -- CORRECTION ICI
+        e.mail_responsable2   -- CORRECTION ICI
       FROM demande_rh d
       LEFT JOIN employees e ON d.employe_id = e.id
       WHERE 1=1
@@ -120,8 +120,8 @@ router.get('/', authenticateToken, async (req, res) => {
           type_demande: demande.type_demande,
           statut: demande.statut,
           employe: `${demande.employe_prenom} ${demande.employe_nom}`,
-          email_responsable1: demande.email_responsable1,
-          email_responsable2: demande.email_responsable2,
+          mail_responsable1: demande.mail_responsable1,  // CORRECTION ICI
+          mail_responsable2: demande.mail_responsable2,  // CORRECTION ICI
           approuve_responsable1: demande.approuve_responsable1,
           approuve_responsable2: demande.approuve_responsable2
         });
@@ -203,8 +203,8 @@ router.get('/:id', authenticateToken, async (req, res) => {
         e.poste as employe_poste,
         e.photo as employe_photo,
         e.matricule as employe_matricule,
-        e.email_responsable1,
-        e.email_responsable2
+        e.mail_responsable1,  -- CORRECTION ICI
+        e.mail_responsable2   -- CORRECTION ICI
       FROM demande_rh d
       LEFT JOIN employees e ON d.employe_id = e.id
       WHERE d.id = $1
