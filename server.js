@@ -6,6 +6,9 @@ const cors = require('cors');
 const { Pool } = require('pg');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
+const multer = require('multer');
+const path = require('path');
+const fs = require('fs');
 
 const app = express();
 const PORT = Number(process.env.PORT || 5000);
@@ -61,6 +64,45 @@ if (!process.env.JWT_SECRET) {
 }
 
 // =========================
+// Configuration Multer pour l'upload
+// =========================
+
+const storage = multer.diskStorage({
+  destination: (req, file, cb) => {
+    const uploadDir = path.join(__dirname, 'public');
+    
+    // Créer le dossier public s'il n'existe pas
+    if (!fs.existsSync(uploadDir)) {
+      fs.mkdirSync(uploadDir, { recursive: true });
+    }
+    
+    cb(null, uploadDir);
+  },
+  filename: (req, file, cb) => {
+    // Générer un nom de fichier unique avec préfixe RH
+    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
+    const ext = path.extname(file.originalname);
+    const filename = `rh-${uniqueSuffix}${ext}`;
+    cb(null, filename);
+  }
+});
+
+const upload = multer({
+  storage: storage,
+  limits: {
+    fileSize: 10 * 1024 * 1024 // 10MB max
+  },
+  fileFilter: (req, file, cb) => {
+    // Accepter seulement les PDF et images
+    if (file.mimetype.startsWith('image/') || file.mimetype === 'application/pdf') {
+      cb(null, true);
+    } else {
+      cb(new Error('Seuls les fichiers PDF et images sont autorisés'), false);
+    }
+  }
+});
+
+// =========================
 // Middleware globaux
 // =========================
 
@@ -92,6 +134,9 @@ const corsOptions = {
 app.use(cors(corsOptions));
 app.options('*', cors(corsOptions));
 app.use(express.json());
+
+// Servir les fichiers statiques depuis le dossier public
+app.use(express.static(path.join(__dirname, 'public')));
 
 // =========================
 // Test connexion BDD
@@ -200,7 +245,8 @@ app.get('/', (req, res) => {
       'POST /api/demandes',
       'PUT  /api/demandes/:id',
       'PUT  /api/demandes/:id/statut',
-      'DELETE /api/demandes/:id'
+      'DELETE /api/demandes/:id',
+      'POST /api/upload-document'
     ]
   });
 });
@@ -653,6 +699,46 @@ app.post('/api/employees', authenticateToken, async (req, res) => {
 });
 
 // =========================
+// Route d'upload de documents
+// =========================
+
+app.post('/api/upload-document', authenticateToken, upload.single('document'), async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ error: 'Aucun fichier uploadé' });
+    }
+
+    console.log('📤 Upload document:', {
+      filename: req.file.filename,
+      originalname: req.file.originalname,
+      size: req.file.size,
+      mimetype: req.file.mimetype,
+      path: req.file.path
+    });
+
+    // Construire l'URL publique du fichier (directement dans public)
+    const fileUrl = `/${req.file.filename}`;
+    
+    res.json({
+      success: true,
+      message: 'Document uploadé avec succès',
+      fileName: req.file.filename,
+      originalName: req.file.originalname,
+      filePath: fileUrl,
+      fileSize: req.file.size,
+      mimeType: req.file.mimetype
+    });
+
+  } catch (error) {
+    console.error('❌ Erreur upload document:', error);
+    res.status(500).json({ 
+      error: 'Erreur lors de l\'upload du document',
+      message: error.message 
+    });
+  }
+});
+
+// =========================
 // Routes Demandes RH
 // =========================
 
@@ -1051,6 +1137,7 @@ app.listen(PORT, () => {
   console.log(`🔐 JWT: ${process.env.JWT_SECRET ? '✅' : '⚠️'}`);
   console.log(`🌍 ENV: ${process.env.NODE_ENV || 'development'}`);
   console.log('📋 Nouvelles routes demandes RH activées');
+  console.log('📁 Upload documents activé (dossier public)');
   console.log('='.repeat(60) + '\n');
 });
 
