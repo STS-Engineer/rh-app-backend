@@ -656,7 +656,7 @@ app.post('/api/employees', authenticateToken, async (req, res) => {
 // Routes Demandes RH
 // =========================
 
-// GET toutes les demandes RH avec filtres
+// GET toutes les demandes RH avec filtres (version corrigée)
 app.get('/api/demandes', authenticateToken, async (req, res) => {
   try {
     const {
@@ -685,9 +685,21 @@ app.get('/api/demandes', authenticateToken, async (req, res) => {
              e.prenom as employe_prenom,
              e.poste as employe_poste,
              e.photo as employe_photo,
-             e.matricule as employe_matricule
+             e.matricule as employe_matricule,
+             e.mail_responsable1,
+             e.mail_responsable2,
+             -- Récupérer les infos du responsable 1
+             r1.nom as responsable1_nom,
+             r1.prenom as responsable1_prenom,
+             -- Récupérer les infos du responsable 2
+             r2.nom as responsable2_nom,
+             r2.prenom as responsable2_prenom
       FROM demande_rh d
       LEFT JOIN employees e ON d.employe_id = e.id
+      -- Jointure pour le responsable 1
+      LEFT JOIN employees r1 ON e.mail_responsable1 = r1.adresse_mail
+      -- Jointure pour le responsable 2
+      LEFT JOIN employees r2 ON e.mail_responsable2 = r2.adresse_mail
       WHERE 1=1
     `;
     const params = [];
@@ -782,7 +794,7 @@ app.get('/api/demandes', authenticateToken, async (req, res) => {
   }
 });
 
-// GET une demande spécifique
+// GET une demande spécifique (version corrigée)
 app.get('/api/demandes/:id', authenticateToken, async (req, res) => {
   try {
     const { id } = req.params;
@@ -795,9 +807,20 @@ app.get('/api/demandes/:id', authenticateToken, async (req, res) => {
              e.poste as employe_poste,
              e.photo as employe_photo,
              e.matricule as employe_matricule,
-             e.cin as employe_cin
+             e.mail_responsable1,
+             e.mail_responsable2,
+             -- Récupérer les infos du responsable 1
+             r1.nom as responsable1_nom,
+             r1.prenom as responsable1_prenom,
+             -- Récupérer les infos du responsable 2
+             r2.nom as responsable2_nom,
+             r2.prenom as responsable2_prenom
       FROM demande_rh d
       LEFT JOIN employees e ON d.employe_id = e.id
+      -- Jointure pour le responsable 1
+      LEFT JOIN employees r1 ON e.mail_responsable1 = r1.adresse_mail
+      -- Jointure pour le responsable 2
+      LEFT JOIN employees r2 ON e.mail_responsable2 = r2.adresse_mail
       WHERE d.id = $1
     `, [id]);
 
