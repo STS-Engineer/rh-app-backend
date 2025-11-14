@@ -1,29 +1,21 @@
-// server.js 
+// server.js
 require('dotenv').config({ path: __dirname + '/.env' });
 
 const express = require('express');
 const cors = require('cors');
-const { Pool } = require('pg');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
+
+const { pool, dbConfig } = require('./db');
+const authenticateToken = require('./middleware/auth');
+const demandesRouter = require('./routes/demande');
 
 const app = express();
 const PORT = Number(process.env.PORT || 5000);
 
 // =========================
-// Configuration de la base
+// Logs de configuration
 // =========================
-
-const dbConfig = {
-  user: process.env.DB_USER,
-  host: process.env.DB_HOST,
-  database: process.env.DB_NAME,
-  password: process.env.DB_PASSWORD,
-  port: Number(process.env.DB_PORT || 5432),
-  ssl: { require: true, rejectUnauthorized: false },
-  connectionTimeoutMillis: 10000, // 10 secondes
-  idleTimeoutMillis: 30000
-};
 
 console.log('🔧 Configuration de la base de données:', {
   user: dbConfig.user,
@@ -33,12 +25,6 @@ console.log('🔧 Configuration de la base de données:', {
   ssl: 'Activé',
   password: dbConfig.password ? '✅ Présent' : '❌ Manquant'
 });
-
-const pool = new Pool(dbConfig);
-
-// =========================
-// Logs de configuration
-// =========================
 
 console.log('🔧 Variables d\'environnement:', {
   DB_USER: process.env.DB_USER || '❌ Manquant',
@@ -50,7 +36,7 @@ console.log('🔧 Variables d\'environnement:', {
   NODE_ENV: process.env.NODE_ENV || 'development'
 });
 
-// Vérification et définition de JWT_SECRET
+// Vérification et définition de JWT_SECRET pour la génération des tokens
 const JWT_SECRET =
   process.env.JWT_SECRET || 'fallback_secret_pour_development_seulement_2024';
 
@@ -123,27 +109,6 @@ pool.on('error', (err) => {
 });
 
 // =========================
-// Middleware d'authentification
-// =========================
-
-const authenticateToken = (req, res, next) => {
-  const authHeader = req.headers['authorization'];
-  const token = authHeader && authHeader.split(' ')[1];
-
-  if (token == null) {
-    return res.sendStatus(401);
-  }
-
-  jwt.verify(token, JWT_SECRET, (err, user) => {
-    if (err) {
-      return res.sendStatus(403);
-    }
-    req.user = user;
-    next();
-  });
-};
-
-// =========================
 // Fonctions utilitaires
 // =========================
 
@@ -200,7 +165,8 @@ app.get('/', (req, res) => {
       'POST /api/demandes',
       'PUT  /api/demandes/:id',
       'PUT  /api/demandes/:id/statut',
-      'DELETE /api/demandes/:id'
+      'DELETE /api/demandes/:id',
+      'GET  /api/demandes/stats/general'
     ]
   });
 });
@@ -209,13 +175,13 @@ app.get('/', (req, res) => {
 app.get('/api/health', async (req, res) => {
   try {
     console.log('🏥 Health check - Tentative de connexion à la base...');
-    
+
     const client = await pool.connect();
     console.log('✅ Client connecté');
-    
+
     const result = await client.query('SELECT version(), current_database()');
     client.release();
-    
+
     console.log('✅ Requête exécutée avec succès');
 
     res.json({
@@ -238,7 +204,7 @@ app.get('/api/health', async (req, res) => {
       code: error.code,
       stack: error.stack
     });
-    
+
     res.status(500).json({
       status: 'Error',
       message: 'Erreur base de données',
@@ -270,12 +236,10 @@ app.post('/api/auth/login', async (req, res) => {
       });
     }
 
-    // Vérifier la connexion à la base
     const client = await pool.connect();
     console.log('✅ Connexion pool établie pour login');
 
     try {
-      // Rechercher l'utilisateur
       const userResult = await client.query(
         'SELECT * FROM users WHERE email = $1',
         [email]
@@ -292,7 +256,6 @@ app.post('/api/auth/login', async (req, res) => {
       const user = userResult.rows[0];
       console.log('👤 Utilisateur trouvé:', user.email);
 
-      // Vérifier le mot de passe
       const isPasswordValid = await bcrypt.compare(password, user.password);
 
       if (isPasswordValid) {
@@ -653,347 +616,10 @@ app.post('/api/employees', authenticateToken, async (req, res) => {
 });
 
 // =========================
-// Routes Demandes RH
+// Routes Demandes RH (via router)
 // =========================
 
-// GET toutes les demandes RH avec filtres
-app.get('/api/demandes', authenticateToken, async (req, res) => {
-  try {
-    const {
-      type_demande,
-      statut,
-      date_debut,
-      date_fin,
-      employe_id,
-      page = 1,
-      limit = 10
-    } = req.query;
-
-    console.log('📋 Récupération des demandes RH avec filtres:', {
-      type_demande,
-      statut,
-      date_debut,
-      date_fin,
-      employe_id,
-      page,
-      limit
-    });
-
-    let query = `
-      SELECT d.*, 
-             e.nom as employe_nom, 
-             e.prenom as employe_prenom,
-             e.poste as employe_poste,
-             e.photo as employe_photo,
-             e.matricule as employe_matricule
-      FROM demande_rh d
-      LEFT JOIN employees e ON d.employe_id = e.id
-      WHERE 1=1
-    `;
-    const params = [];
-    let paramCount = 0;
-
-    // Filtres
-    if (type_demande) {
-      paramCount++;
-      query += ` AND d.type_demande = $${paramCount}`;
-      params.push(type_demande);
-    }
-
-    if (statut) {
-      paramCount++;
-      query += ` AND d.statut = $${paramCount}`;
-      params.push(statut);
-    }
-
-    if (employe_id) {
-      paramCount++;
-      query += ` AND d.employe_id = $${paramCount}`;
-      params.push(employe_id);
-    }
-
-    if (date_debut && date_fin) {
-      paramCount++;
-      query += ` AND d.date_depart BETWEEN $${paramCount}`;
-      params.push(date_debut);
-      paramCount++;
-      query += ` AND $${paramCount}`;
-      params.push(date_fin);
-    }
-
-    // Ordre et pagination
-    query += ` ORDER BY d.created_at DESC LIMIT $${paramCount + 1} OFFSET $${paramCount + 2}`;
-    params.push(parseInt(limit), (parseInt(page) - 1) * parseInt(limit));
-
-    const result = await pool.query(query, params);
-
-    // Count pour la pagination
-    let countQuery = `SELECT COUNT(*) FROM demande_rh d WHERE 1=1`;
-    const countParams = [];
-    let countParamCount = 0;
-
-    if (type_demande) {
-      countParamCount++;
-      countQuery += ` AND d.type_demande = $${countParamCount}`;
-      countParams.push(type_demande);
-    }
-
-    if (statut) {
-      countParamCount++;
-      countQuery += ` AND d.statut = $${countParamCount}`;
-      countParams.push(statut);
-    }
-
-    if (employe_id) {
-      countParamCount++;
-      countQuery += ` AND d.employe_id = $${countParamCount}`;
-      countParams.push(employe_id);
-    }
-
-    if (date_debut && date_fin) {
-      countParamCount++;
-      countQuery += ` AND d.date_depart BETWEEN $${countParamCount}`;
-      countParams.push(date_debut);
-      countParamCount++;
-      countQuery += ` AND $${countParamCount}`;
-      countParams.push(date_fin);
-    }
-
-    const countResult = await pool.query(countQuery, countParams);
-    const total = parseInt(countResult.rows[0].count);
-
-    console.log(`✅ ${result.rows.length} demandes récupérées sur ${total} total`);
-
-    res.json({
-      demandes: result.rows,
-      pagination: {
-        page: parseInt(page),
-        limit: parseInt(limit),
-        total,
-        pages: Math.ceil(total / limit)
-      }
-    });
-  } catch (error) {
-    console.error('❌ Erreur récupération demandes:', error);
-    res.status(500).json({ 
-      error: 'Erreur lors de la récupération des demandes',
-      message: error.message 
-    });
-  }
-});
-
-// GET une demande spécifique
-app.get('/api/demandes/:id', authenticateToken, async (req, res) => {
-  try {
-    const { id } = req.params;
-    console.log('📄 Récupération demande ID:', id);
-    
-    const result = await pool.query(`
-      SELECT d.*, 
-             e.nom as employe_nom, 
-             e.prenom as employe_prenom,
-             e.poste as employe_poste,
-             e.photo as employe_photo,
-             e.matricule as employe_matricule,
-             e.cin as employe_cin
-      FROM demande_rh d
-      LEFT JOIN employees e ON d.employe_id = e.id
-      WHERE d.id = $1
-    `, [id]);
-
-    if (result.rows.length === 0) {
-      return res.status(404).json({ error: 'Demande non trouvée' });
-    }
-
-    console.log('✅ Demande récupérée');
-    res.json(result.rows[0]);
-  } catch (error) {
-    console.error('❌ Erreur récupération demande:', error);
-    res.status(500).json({ 
-      error: 'Erreur lors de la récupération de la demande',
-      message: error.message 
-    });
-  }
-});
-
-// POST nouvelle demande
-app.post('/api/demandes', authenticateToken, async (req, res) => {
-  try {
-    console.log('➕ Création nouvelle demande RH');
-
-    const {
-      employe_id,
-      type_demande,
-      titre,
-      type_conge,
-      type_conge_autre,
-      date_depart,
-      date_retour,
-      heure_depart,
-      heure_retour,
-      demi_journee,
-      frais_deplacement,
-      commentaire_refus
-    } = req.body;
-
-    // Validation des champs obligatoires
-    if (!employe_id || !type_demande || !titre) {
-      return res.status(400).json({
-        error: 'Employé, type de demande et titre sont obligatoires'
-      });
-    }
-
-    const result = await pool.query(`
-      INSERT INTO demande_rh (
-        employe_id, type_demande, titre, type_conge, type_conge_autre,
-        date_depart, date_retour, heure_depart, heure_retour,
-        demi_journee, frais_deplacement, commentaire_refus, statut,
-        created_at, updated_at
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, 'en_attente', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-      RETURNING *
-    `, [
-      employe_id, 
-      type_demande, 
-      titre, 
-      type_conge || null, 
-      type_conge_autre || null,
-      date_depart || null, 
-      date_retour || null, 
-      heure_depart || null, 
-      heure_retour || null,
-      demi_journee || false, 
-      frais_deplacement ? parseFloat(frais_deplacement) : null, 
-      commentaire_refus || null
-    ]);
-
-    console.log('✅ Demande créée, ID:', result.rows[0].id);
-    res.status(201).json(result.rows[0]);
-  } catch (error) {
-    console.error('❌ Erreur création demande:', error);
-    res.status(500).json({ 
-      error: 'Erreur lors de la création de la demande',
-      message: error.message 
-    });
-  }
-});
-
-// PUT mise à jour demande
-app.put('/api/demandes/:id', authenticateToken, async (req, res) => {
-  try {
-    const { id } = req.params;
-    console.log('✏️ Mise à jour demande ID:', id);
-
-    const {
-      type_demande,
-      titre,
-      type_conge,
-      type_conge_autre,
-      date_depart,
-      date_retour,
-      heure_depart,
-      heure_retour,
-      demi_journee,
-      frais_deplacement,
-      statut,
-      approuve_responsable1,
-      approuve_responsable2,
-      commentaire_refus
-    } = req.body;
-
-    const result = await pool.query(`
-      UPDATE demande_rh 
-      SET type_demande = $1, titre = $2, type_conge = $3, type_conge_autre = $4,
-          date_depart = $5, date_retour = $6, heure_depart = $7, heure_retour = $8,
-          demi_journee = $9, frais_deplacement = $10, statut = $11,
-          approuve_responsable1 = $12, approuve_responsable2 = $13,
-          commentaire_refus = $14, updated_at = CURRENT_TIMESTAMP
-      WHERE id = $15
-      RETURNING *
-    `, [
-      type_demande, 
-      titre, 
-      type_conge || null, 
-      type_conge_autre || null,
-      date_depart || null, 
-      date_retour || null, 
-      heure_depart || null, 
-      heure_retour || null,
-      demi_journee || false, 
-      frais_deplacement ? parseFloat(frais_deplacement) : null, 
-      statut || 'en_attente',
-      approuve_responsable1 || false,
-      approuve_responsable2 || false,
-      commentaire_refus || null, 
-      id
-    ]);
-
-    if (result.rows.length === 0) {
-      return res.status(404).json({ error: 'Demande non trouvée' });
-    }
-
-    console.log('✅ Demande mise à jour');
-    res.json(result.rows[0]);
-  } catch (error) {
-    console.error('❌ Erreur mise à jour demande:', error);
-    res.status(500).json({ 
-      error: 'Erreur lors de la mise à jour de la demande',
-      message: error.message 
-    });
-  }
-});
-
-// PUT statut demande
-app.put('/api/demandes/:id/statut', authenticateToken, async (req, res) => {
-  try {
-    const { id } = req.params;
-    const { statut, commentaire_refus } = req.body;
-
-    console.log('🔄 Changement statut demande ID:', id, '->', statut);
-
-    const result = await pool.query(`
-      UPDATE demande_rh 
-      SET statut = $1, commentaire_refus = $2, updated_at = CURRENT_TIMESTAMP
-      WHERE id = $3
-      RETURNING *
-    `, [statut, commentaire_refus || null, id]);
-
-    if (result.rows.length === 0) {
-      return res.status(404).json({ error: 'Demande non trouvée' });
-    }
-
-    console.log('✅ Statut demande mis à jour');
-    res.json(result.rows[0]);
-  } catch (error) {
-    console.error('❌ Erreur changement statut:', error);
-    res.status(500).json({ 
-      error: 'Erreur lors du changement de statut',
-      message: error.message 
-    });
-  }
-});
-
-// DELETE demande
-app.delete('/api/demandes/:id', authenticateToken, async (req, res) => {
-  try {
-    const { id } = req.params;
-    console.log('🗑️ Suppression demande ID:', id);
-    
-    const result = await pool.query('DELETE FROM demande_rh WHERE id = $1 RETURNING *', [id]);
-
-    if (result.rows.length === 0) {
-      return res.status(404).json({ error: 'Demande non trouvée' });
-    }
-
-    console.log('✅ Demande supprimée');
-    res.json({ message: 'Demande supprimée avec succès', deleted: result.rows[0] });
-  } catch (error) {
-    console.error('❌ Erreur suppression demande:', error);
-    res.status(500).json({ 
-      error: 'Erreur lors de la suppression de la demande',
-      message: error.message 
-    });
-  }
-});
+app.use('/api/demandes', demandesRouter);
 
 // =========================
 // Routes fallback & erreurs
@@ -1027,7 +653,7 @@ app.listen(PORT, () => {
   console.log(`🗄️  Base: ${process.env.DB_NAME} @ ${process.env.DB_HOST}`);
   console.log(`🔐 JWT: ${process.env.JWT_SECRET ? '✅' : '⚠️'}`);
   console.log(`🌍 ENV: ${process.env.NODE_ENV || 'development'}`);
-  console.log('📋 Nouvelles routes demandes RH activées');
+  console.log('📋 Nouvelles routes demandes RH activées (via /routes/demande.js)');
   console.log('='.repeat(60) + '\n');
 });
 
