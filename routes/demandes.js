@@ -43,10 +43,20 @@ router.get('/', authenticateToken, async (req, res) => {
         e.poste as employe_poste,
         e.photo as employe_photo,
         e.matricule as employe_matricule,
-        e.mail_responsable1,  -- CORRECTION ICI
-        e.mail_responsable2   -- CORRECTION ICI
+        e.mail_responsable1,
+        e.mail_responsable2,
+        -- Récupérer les infos du responsable 1
+        r1.nom as responsable1_nom,
+        r1.prenom as responsable1_prenom,
+        -- Récupérer les infos du responsable 2
+        r2.nom as responsable2_nom,
+        r2.prenom as responsable2_prenom
       FROM demande_rh d
       LEFT JOIN employees e ON d.employe_id = e.id
+      -- Jointure pour le responsable 1
+      LEFT JOIN employees r1 ON e.mail_responsable1 = r1.adresse_mail
+      -- Jointure pour le responsable 2
+      LEFT JOIN employees r2 ON e.mail_responsable2 = r2.adresse_mail
       WHERE 1=1
     `;
     const params = [];
@@ -120,8 +130,10 @@ router.get('/', authenticateToken, async (req, res) => {
           type_demande: demande.type_demande,
           statut: demande.statut,
           employe: `${demande.employe_prenom} ${demande.employe_nom}`,
-          mail_responsable1: demande.mail_responsable1,  // CORRECTION ICI
-          mail_responsable2: demande.mail_responsable2,  // CORRECTION ICI
+          mail_responsable1: demande.mail_responsable1,
+          mail_responsable2: demande.mail_responsable2,
+          responsable1: `${demande.responsable1_prenom} ${demande.responsable1_nom}`,
+          responsable2: `${demande.responsable2_prenom} ${demande.responsable2_nom}`,
           approuve_responsable1: demande.approuve_responsable1,
           approuve_responsable2: demande.approuve_responsable2
         });
@@ -203,10 +215,20 @@ router.get('/:id', authenticateToken, async (req, res) => {
         e.poste as employe_poste,
         e.photo as employe_photo,
         e.matricule as employe_matricule,
-        e.mail_responsable1,  -- CORRECTION ICI
-        e.mail_responsable2   -- CORRECTION ICI
+        e.mail_responsable1,
+        e.mail_responsable2,
+        -- Récupérer les infos du responsable 1
+        r1.nom as responsable1_nom,
+        r1.prenom as responsable1_prenom,
+        -- Récupérer les infos du responsable 2
+        r2.nom as responsable2_nom,
+        r2.prenom as responsable2_prenom
       FROM demande_rh d
       LEFT JOIN employees e ON d.employe_id = e.id
+      -- Jointure pour le responsable 1
+      LEFT JOIN employees r1 ON e.mail_responsable1 = r1.adresse_mail
+      -- Jointure pour le responsable 2
+      LEFT JOIN employees r2 ON e.mail_responsable2 = r2.adresse_mail
       WHERE d.id = $1
     `, [id]);
 
