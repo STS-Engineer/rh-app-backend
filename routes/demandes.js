@@ -22,15 +22,19 @@ router.get('/', authenticateToken, async (req, res) => {
       date_fin,
       employe_id,
       page = 1,
-      limit = 10
+      limit = 50
     } = req.query;
 
     let query = `
-      SELECT d.*, 
-             e.nom as employe_nom, 
-             e.prenom as employe_prenom,
-             e.poste as employe_poste,
-             e.photo as employe_photo
+      SELECT 
+        d.*, 
+        e.nom as employe_nom, 
+        e.prenom as employe_prenom,
+        e.poste as employe_poste,
+        e.photo as employe_photo,
+        e.matricule as employe_matricule,
+        e.email_responsable1,
+        e.email_responsable2
       FROM demande_rh d
       LEFT JOIN employees e ON d.employe_id = e.id
       WHERE 1=1
@@ -68,44 +72,46 @@ router.get('/', authenticateToken, async (req, res) => {
 
     // Ordre et pagination
     query += ` ORDER BY d.created_at DESC LIMIT $${paramCount + 1} OFFSET $${paramCount + 2}`;
-    params.push(limit, (page - 1) * limit);
+    params.push(parseInt(limit), (parseInt(page) - 1) * parseInt(limit));
 
     const result = await pool.query(query, params);
 
     // Count pour la pagination
-let countQuery = `SELECT COUNT(*) FROM demande_rh d WHERE 1=1`;
-const countParams = [];
-let countParamCount = 0;
+    let countQuery = `SELECT COUNT(*) FROM demande_rh d WHERE 1=1`;
+    const countParams = [];
+    let countParamCount = 0;
 
-  if (type_demande) {
-    countParamCount++;
-    countQuery += ` AND d.type_demande = $${countParamCount}`;
-    countParams.push(type_demande);
-  }
-  
-  if (statut) {
-    countParamCount++;
-    countQuery += ` AND d.statut = $${countParamCount}`;
-    countParams.push(statut);
-  }
-  
-  if (employe_id) {
-    countParamCount++;
-    countQuery += ` AND d.employe_id = $${countParamCount}`;
-    countParams.push(employe_id);
-  }
-  
-  if (date_debut && date_fin) {
-    countParamCount++;
-    countQuery += ` AND d.date_depart BETWEEN $${countParamCount}`;
-    countParams.push(date_debut);
-    countParamCount++;
-    countQuery += ` AND $${countParamCount}`;
-    countParams.push(date_fin);
-  }
+    if (type_demande) {
+      countParamCount++;
+      countQuery += ` AND d.type_demande = $${countParamCount}`;
+      countParams.push(type_demande);
+    }
+
+    if (statut) {
+      countParamCount++;
+      countQuery += ` AND d.statut = $${countParamCount}`;
+      countParams.push(statut);
+    }
+
+    if (employe_id) {
+      countParamCount++;
+      countQuery += ` AND d.employe_id = $${countParamCount}`;
+      countParams.push(employe_id);
+    }
+
+    if (date_debut && date_fin) {
+      countParamCount++;
+      countQuery += ` AND d.date_depart BETWEEN $${countParamCount}`;
+      countParams.push(date_debut);
+      countParamCount++;
+      countQuery += ` AND $${countParamCount}`;
+      countParams.push(date_fin);
+    }
 
     const countResult = await pool.query(countQuery, countParams);
     const total = parseInt(countResult.rows[0].count);
+
+    console.log(`✅ ${result.rows.length} demandes récupérées avec emails responsables`);
 
     res.json({
       demandes: result.rows,
@@ -117,8 +123,11 @@ let countParamCount = 0;
       }
     });
   } catch (error) {
-    console.error('Erreur récupération demandes:', error);
-    res.status(500).json({ error: 'Erreur lors de la récupération des demandes' });
+    console.error('❌ Erreur récupération demandes:', error);
+    res.status(500).json({ 
+      error: 'Erreur lors de la récupération des demandes',
+      message: error.message 
+    });
   }
 });
 
