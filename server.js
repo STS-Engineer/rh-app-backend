@@ -6,6 +6,9 @@ const cors = require('cors');
 const { Pool } = require('pg');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
+const multer = require('multer');
+const path = require('path');
+const fs = require('fs');
 
 const app = express();
 const PORT = Number(process.env.PORT || 5000);
@@ -21,7 +24,7 @@ const dbConfig = {
   password: process.env.DB_PASSWORD,
   port: Number(process.env.DB_PORT || 5432),
   ssl: { require: true, rejectUnauthorized: false },
-  connectionTimeoutMillis: 10000, // 10 secondes
+  connectionTimeoutMillis: 10000,
   idleTimeoutMillis: 30000
 };
 
@@ -50,7 +53,6 @@ console.log('🔧 Variables d\'environnement:', {
   NODE_ENV: process.env.NODE_ENV || 'development'
 });
 
-// Vérification et définition de JWT_SECRET
 const JWT_SECRET =
   process.env.JWT_SECRET || 'fallback_secret_pour_development_seulement_2024';
 
@@ -61,22 +63,73 @@ if (!process.env.JWT_SECRET) {
 }
 
 // =========================
+// Configuration Upload & Dossier Public
+// =========================
+
+// Créer le dossier public s'il n'existe pas (pour Azure)
+const publicDir = path.join(__dirname, 'public');
+if (!fs.existsSync(publicDir)) {
+  fs.mkdirSync(publicDir, { recursive: true });
+  console.log('📁 Dossier public créé:', publicDir);
+} else {
+  console.log('📁 Dossier public existant:', publicDir);
+}
+
+// Configuration Multer pour l'upload
+const storage = multer.diskStorage({
+  destination: (req, file, cb) => {
+    cb(null, publicDir);
+  },
+  filename: (req, file, cb) => {
+    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
+    const ext = path.extname(file.originalname);
+    const sanitizedName = file.originalname
+      .replace(ext, '')
+      .replace(/[^a-zA-Z0-9]/g, '-')
+      .substring(0, 50);
+    cb(null, `dossier-rh-${sanitizedName}-${uniqueSuffix}${ext}`);
+  }
+});
+
+const upload = multer({
+  storage: storage,
+  limits: { fileSize: 10 * 1024 * 1024 }, // 10MB max
+  fileFilter: (req, file, cb) => {
+    console.log('📎 Fichier reçu:', {
+      originalname: file.originalname,
+      mimetype: file.mimetype,
+      size: file.size
+    });
+
+    const allowedTypes = [
+      'application/pdf',
+      'image/jpeg',
+      'image/jpg',
+      'image/png',
+      'image/gif'
+    ];
+    
+    if (allowedTypes.includes(file.mimetype)) {
+      cb(null, true);
+    } else {
+      cb(new Error('Type de fichier non autorisé. Utilisez PDF, JPG, PNG ou GIF.'));
+    }
+  }
+});
+
+// =========================
 // Middleware globaux
 // =========================
 
-// Gestion CORS (local + Azure)
+// Gestion CORS (Azure)
 const allowedOrigins = [
   'http://localhost:3000',
-  'https://avo-hr-managment.azurewebsites.net'
-];
-
-if (process.env.FRONTEND_URL && !allowedOrigins.includes(process.env.FRONTEND_URL)) {
-  allowedOrigins.push(process.env.FRONTEND_URL);
-}
+  'https://avo-hr-managment.azurewebsites.net',
+  process.env.FRONTEND_URL
+].filter(Boolean);
 
 const corsOptions = {
   origin(origin, callback) {
-    // Autoriser les outils sans header Origin (Postman, curl…)
     if (!origin) return callback(null, true);
 
     if (allowedOrigins.includes(origin)) {
@@ -92,6 +145,16 @@ const corsOptions = {
 app.use(cors(corsOptions));
 app.options('*', cors(corsOptions));
 app.use(express.json());
+
+// Servir les fichiers statiques du dossier public
+app.use('/public', express.static(publicDir, {
+  setHeaders: (res, filePath) => {
+    if (filePath.endsWith('.pdf')) {
+      res.set('Content-Type', 'application/pdf');
+    }
+  }
+}));
+console.log('🌐 Fichiers statiques servis depuis /public');
 
 // =========================
 // Test connexion BDD
@@ -117,7 +180,6 @@ pool
     });
   });
 
-// Gestion des erreurs de pool
 pool.on('error', (err) => {
   console.error('❌ Erreur inattendue du pool PostgreSQL:', err);
 });
@@ -192,7 +254,9 @@ app.get('/', (req, res) => {
       'GET  /api/employees',
       'GET  /api/employees/archives',
       'GET  /api/employees/search?q=nom',
+      'GET  /api/employees/:id',
       'PUT  /api/employees/:id',
+      'POST /api/employees/:id/upload-dossier',
       'PUT  /api/employees/:id/archive',
       'POST /api/employees',
       'GET  /api/demandes',
@@ -227,6 +291,10 @@ app.get('/api/health', async (req, res) => {
         name: result.rows[0].current_database,
         host: process.env.DB_HOST,
         port: process.env.DB_PORT
+      },
+      upload: {
+        publicDir: publicDir,
+        exists: fs.existsSync(publicDir)
       },
       jwt: process.env.JWT_SECRET ? 'Configuré' : 'Utilisation fallback',
       environment: process.env.NODE_ENV || 'development',
@@ -270,12 +338,10 @@ app.post('/api/auth/login', async (req, res) => {
       });
     }
 
-    // Vérifier la connexion à la base
     const client = await pool.connect();
     console.log('✅ Connexion pool établie pour login');
 
     try {
-      // Rechercher l'utilisateur
       const userResult = await client.query(
         'SELECT * FROM users WHERE email = $1',
         [email]
@@ -292,7 +358,6 @@ app.post('/api/auth/login', async (req, res) => {
       const user = userResult.rows[0];
       console.log('👤 Utilisateur trouvé:', user.email);
 
-      // Vérifier le mot de passe
       const isPasswordValid = await bcrypt.compare(password, user.password);
 
       if (isPasswordValid) {
@@ -447,6 +512,97 @@ app.get('/api/employees/:id', authenticateToken, async (req, res) => {
   }
 });
 
+// =========================
+// NOUVELLE ROUTE: Upload Dossier RH
+// =========================
+
+app.post('/api/employees/:id/upload-dossier', authenticateToken, upload.single('dossier'), async (req, res) => {
+  try {
+    const { id } = req.params;
+    
+    if (!req.file) {
+      console.log('❌ Aucun fichier reçu');
+      return res.status(400).json({ error: 'Aucun fichier reçu' });
+    }
+
+    console.log('📤 Upload dossier RH pour employé ID:', id);
+    console.log('📄 Fichier uploadé:', {
+      filename: req.file.filename,
+      originalname: req.file.originalname,
+      mimetype: req.file.mimetype,
+      size: req.file.size,
+      path: req.file.path
+    });
+
+    // Construire le chemin relatif pour la base de données
+    const dossierPath = `/public/${req.file.filename}`;
+    
+    console.log('💾 Chemin à enregistrer dans la BDD:', dossierPath);
+
+    // Vérifier si l'employé existe
+    const checkEmployee = await pool.query('SELECT id, dossier_rh FROM employees WHERE id = $1', [id]);
+    
+    if (checkEmployee.rows.length === 0) {
+      // Supprimer le fichier uploadé si l'employé n'existe pas
+      fs.unlinkSync(req.file.path);
+      console.log('❌ Employé non trouvé, fichier supprimé');
+      return res.status(404).json({ error: 'Employé non trouvé' });
+    }
+
+    // Supprimer l'ancien fichier s'il existe
+    const oldDossier = checkEmployee.rows[0].dossier_rh;
+    if (oldDossier && oldDossier.startsWith('/public/')) {
+      const oldFilePath = path.join(__dirname, oldDossier);
+      if (fs.existsSync(oldFilePath)) {
+        try {
+          fs.unlinkSync(oldFilePath);
+          console.log('🗑️ Ancien fichier supprimé:', oldFilePath);
+        } catch (err) {
+          console.warn('⚠️ Erreur lors de la suppression de l\'ancien fichier:', err.message);
+        }
+      }
+    }
+
+    // Mettre à jour la base de données
+    const result = await pool.query(
+      'UPDATE employees SET dossier_rh = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2 RETURNING *',
+      [dossierPath, id]
+    );
+
+    console.log('✅ Dossier RH uploadé et enregistré avec succès');
+    
+    res.json({
+      success: true,
+      message: 'Dossier RH uploadé avec succès',
+      employee: result.rows[0],
+      filePath: dossierPath,
+      fileUrl: `${req.protocol}://${req.get('host')}${dossierPath}`
+    });
+
+  } catch (error) {
+    console.error('❌ Erreur upload dossier:', error);
+    
+    // Supprimer le fichier en cas d'erreur
+    if (req.file && fs.existsSync(req.file.path)) {
+      try {
+        fs.unlinkSync(req.file.path);
+        console.log('🗑️ Fichier supprimé suite à l\'erreur');
+      } catch (unlinkError) {
+        console.error('❌ Erreur lors de la suppression du fichier:', unlinkError);
+      }
+    }
+    
+    res.status(500).json({ 
+      error: 'Erreur lors de l\'upload du dossier',
+      message: error.message 
+    });
+  }
+});
+
+// =========================
+// Autres routes employés
+// =========================
+
 app.put('/api/employees/:id', authenticateToken, async (req, res) => {
   try {
     const { id } = req.params;
@@ -466,7 +622,10 @@ app.put('/api/employees/:id', authenticateToken, async (req, res) => {
       salaire_brute,
       photo,
       dossier_rh,
-      date_depart
+      date_depart,
+      adresse_mail,
+      mail_responsable1,
+      mail_responsable2
     } = req.body;
 
     let photoUrl = photo;
@@ -482,8 +641,9 @@ app.put('/api/employees/:id', authenticateToken, async (req, res) => {
       SET matricule = $1, nom = $2, prenom = $3, cin = $4, passeport = $5,
           date_naissance = $6, poste = $7, site_dep = $8, type_contrat = $9,
           date_debut = $10, salaire_brute = $11, photo = $12, dossier_rh = $13,
-          date_depart = $14, updated_at = CURRENT_TIMESTAMP
-      WHERE id = $15
+          date_depart = $14, adresse_mail = $15, mail_responsable1 = $16, 
+          mail_responsable2 = $17, updated_at = CURRENT_TIMESTAMP
+      WHERE id = $18
       RETURNING *
     `,
       [
@@ -501,6 +661,9 @@ app.put('/api/employees/:id', authenticateToken, async (req, res) => {
         photoUrl,
         dossier_rh,
         date_depart,
+        adresse_mail,
+        mail_responsable1,
+        mail_responsable2,
         id
       ]
     );
@@ -576,7 +739,10 @@ app.post('/api/employees', authenticateToken, async (req, res) => {
       date_debut,
       salaire_brute,
       photo,
-      dossier_rh
+      dossier_rh,
+      adresse_mail,
+      mail_responsable1,
+      mail_responsable2
     } = req.body;
 
     if (
@@ -603,8 +769,10 @@ app.post('/api/employees', authenticateToken, async (req, res) => {
     const result = await pool.query(
       `
       INSERT INTO employees 
-      (matricule, nom, prenom, cin, passeport, date_naissance, poste, site_dep, type_contrat, date_debut, salaire_brute, photo, dossier_rh, statut) 
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, 'actif')
+      (matricule, nom, prenom, cin, passeport, date_naissance, poste, site_dep, 
+       type_contrat, date_debut, salaire_brute, photo, dossier_rh, adresse_mail,
+       mail_responsable1, mail_responsable2, statut) 
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, 'actif')
       RETURNING *
     `,
       [
@@ -620,7 +788,10 @@ app.post('/api/employees', authenticateToken, async (req, res) => {
         date_debut,
         parseFloat(salaire_brute),
         photoUrl,
-        dossier_rh || null
+        dossier_rh || null,
+        adresse_mail || null,
+        mail_responsable1 || null,
+        mail_responsable2 || null
       ]
     );
 
@@ -656,7 +827,6 @@ app.post('/api/employees', authenticateToken, async (req, res) => {
 // Routes Demandes RH
 // =========================
 
-// GET toutes les demandes RH avec filtres (version corrigée)
 app.get('/api/demandes', authenticateToken, async (req, res) => {
   try {
     const {
@@ -688,24 +858,19 @@ app.get('/api/demandes', authenticateToken, async (req, res) => {
              e.matricule as employe_matricule,
              e.mail_responsable1,
              e.mail_responsable2,
-             -- Récupérer les infos du responsable 1
              r1.nom as responsable1_nom,
              r1.prenom as responsable1_prenom,
-             -- Récupérer les infos du responsable 2
              r2.nom as responsable2_nom,
              r2.prenom as responsable2_prenom
       FROM demande_rh d
       LEFT JOIN employees e ON d.employe_id = e.id
-      -- Jointure pour le responsable 1
       LEFT JOIN employees r1 ON e.mail_responsable1 = r1.adresse_mail
-      -- Jointure pour le responsable 2
       LEFT JOIN employees r2 ON e.mail_responsable2 = r2.adresse_mail
       WHERE 1=1
     `;
     const params = [];
     let paramCount = 0;
 
-    // Filtres
     if (type_demande) {
       paramCount++;
       query += ` AND d.type_demande = $${paramCount}`;
@@ -733,13 +898,11 @@ app.get('/api/demandes', authenticateToken, async (req, res) => {
       params.push(date_fin);
     }
 
-    // Ordre et pagination
     query += ` ORDER BY d.created_at DESC LIMIT $${paramCount + 1} OFFSET $${paramCount + 2}`;
     params.push(parseInt(limit), (parseInt(page) - 1) * parseInt(limit));
 
     const result = await pool.query(query, params);
 
-    // Count pour la pagination
     let countQuery = `SELECT COUNT(*) FROM demande_rh d WHERE 1=1`;
     const countParams = [];
     let countParamCount = 0;
@@ -794,7 +957,6 @@ app.get('/api/demandes', authenticateToken, async (req, res) => {
   }
 });
 
-// GET une demande spécifique (version corrigée)
 app.get('/api/demandes/:id', authenticateToken, async (req, res) => {
   try {
     const { id } = req.params;
@@ -809,17 +971,13 @@ app.get('/api/demandes/:id', authenticateToken, async (req, res) => {
              e.matricule as employe_matricule,
              e.mail_responsable1,
              e.mail_responsable2,
-             -- Récupérer les infos du responsable 1
              r1.nom as responsable1_nom,
              r1.prenom as responsable1_prenom,
-             -- Récupérer les infos du responsable 2
              r2.nom as responsable2_nom,
              r2.prenom as responsable2_prenom
       FROM demande_rh d
       LEFT JOIN employees e ON d.employe_id = e.id
-      -- Jointure pour le responsable 1
       LEFT JOIN employees r1 ON e.mail_responsable1 = r1.adresse_mail
-      -- Jointure pour le responsable 2
       LEFT JOIN employees r2 ON e.mail_responsable2 = r2.adresse_mail
       WHERE d.id = $1
     `, [id]);
@@ -839,7 +997,6 @@ app.get('/api/demandes/:id', authenticateToken, async (req, res) => {
   }
 });
 
-// POST nouvelle demande
 app.post('/api/demandes', authenticateToken, async (req, res) => {
   try {
     console.log('➕ Création nouvelle demande RH');
@@ -859,7 +1016,6 @@ app.post('/api/demandes', authenticateToken, async (req, res) => {
       commentaire_refus
     } = req.body;
 
-    // Validation des champs obligatoires
     if (!employe_id || !type_demande || !titre) {
       return res.status(400).json({
         error: 'Employé, type de demande et titre sont obligatoires'
@@ -900,7 +1056,6 @@ app.post('/api/demandes', authenticateToken, async (req, res) => {
   }
 });
 
-// PUT mise à jour demande
 app.put('/api/demandes/:id', authenticateToken, async (req, res) => {
   try {
     const { id } = req.params;
@@ -965,7 +1120,6 @@ app.put('/api/demandes/:id', authenticateToken, async (req, res) => {
   }
 });
 
-// PUT statut demande
 app.put('/api/demandes/:id/statut', authenticateToken, async (req, res) => {
   try {
     const { id } = req.params;
@@ -995,7 +1149,6 @@ app.put('/api/demandes/:id/statut', authenticateToken, async (req, res) => {
   }
 });
 
-// DELETE demande
 app.delete('/api/demandes/:id', authenticateToken, async (req, res) => {
   try {
     const { id } = req.params;
@@ -1050,7 +1203,9 @@ app.listen(PORT, () => {
   console.log(`🗄️  Base: ${process.env.DB_NAME} @ ${process.env.DB_HOST}`);
   console.log(`🔐 JWT: ${process.env.JWT_SECRET ? '✅' : '⚠️'}`);
   console.log(`🌍 ENV: ${process.env.NODE_ENV || 'development'}`);
-  console.log('📋 Nouvelles routes demandes RH activées');
+  console.log('📋 Routes demandes RH activées');
+  console.log('📤 Route upload dossier RH activée');
+  console.log('📁 Dossier public configuré');
   console.log('='.repeat(60) + '\n');
 });
 
