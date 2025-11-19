@@ -1,3 +1,4 @@
+// server.js 
 require('dotenv').config({ path: __dirname + '/.env' });
 
 const express = require('express');
@@ -5,14 +6,14 @@ const cors = require('cors');
 const { Pool } = require('pg');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
-const multer = require('multer');
-const path = require('path');
-const fs = require('fs');
 
 const app = express();
 const PORT = Number(process.env.PORT || 5000);
 
-// Configuration de la base de données
+// =========================
+// Configuration de la base
+// =========================
+
 const dbConfig = {
   user: process.env.DB_USER,
   host: process.env.DB_HOST,
@@ -20,7 +21,7 @@ const dbConfig = {
   password: process.env.DB_PASSWORD,
   port: Number(process.env.DB_PORT || 5432),
   ssl: { require: true, rejectUnauthorized: false },
-  connectionTimeoutMillis: 10000,
+  connectionTimeoutMillis: 10000, // 10 secondes
   idleTimeoutMillis: 30000
 };
 
@@ -35,14 +36,35 @@ console.log('🔧 Configuration de la base de données:', {
 
 const pool = new Pool(dbConfig);
 
-// Configuration JWT
-const JWT_SECRET = process.env.JWT_SECRET || 'fallback_secret_pour_development_seulement_2024';
+// =========================
+// Logs de configuration
+// =========================
+
+console.log('🔧 Variables d\'environnement:', {
+  DB_USER: process.env.DB_USER || '❌ Manquant',
+  DB_HOST: process.env.DB_HOST || '❌ Manquant',
+  DB_NAME: process.env.DB_NAME || '❌ Manquant',
+  DB_PORT: process.env.DB_PORT || '5432 (défaut)',
+  JWT_SECRET: process.env.JWT_SECRET ? '✅ Défini' : '❌ Manquant',
+  FRONTEND_URL: process.env.FRONTEND_URL || '❌ Non défini',
+  NODE_ENV: process.env.NODE_ENV || 'development'
+});
+
+// Vérification et définition de JWT_SECRET
+const JWT_SECRET =
+  process.env.JWT_SECRET || 'fallback_secret_pour_development_seulement_2024';
 
 if (!process.env.JWT_SECRET) {
-  console.warn('⚠️  JWT_SECRET non défini dans .env - utilisation d\'un secret de développement');
+  console.warn(
+    '⚠️  JWT_SECRET non défini dans .env - utilisation d\'un secret de développement'
+  );
 }
 
-// Configuration CORS
+// =========================
+// Middleware globaux
+// =========================
+
+// Gestion CORS (local + Azure)
 const allowedOrigins = [
   'http://localhost:3000',
   'https://avo-hr-managment.azurewebsites.net'
@@ -54,6 +76,7 @@ if (process.env.FRONTEND_URL && !allowedOrigins.includes(process.env.FRONTEND_UR
 
 const corsOptions = {
   origin(origin, callback) {
+    // Autoriser les outils sans header Origin (Postman, curl…)
     if (!origin) return callback(null, true);
 
     if (allowedOrigins.includes(origin)) {
@@ -70,47 +93,10 @@ app.use(cors(corsOptions));
 app.options('*', cors(corsOptions));
 app.use(express.json());
 
-// Configuration Multer pour Azure App Service
-const uploadDir = process.env.HOME 
-  ? path.join(process.env.HOME, 'site', 'wwwroot', 'public', 'uploads') 
-  : path.join(__dirname, 'public', 'uploads');
-
-if (!fs.existsSync(uploadDir)) {
-  fs.mkdirSync(uploadDir, { recursive: true });
-  console.log('📁 Dossier upload créé:', uploadDir);
-}
-
-const storage = multer.diskStorage({
-  destination: (req, file, cb) => {
-    cb(null, uploadDir);
-  },
-  filename: (req, file, cb) => {
-    const employeeId = req.body.employee_id;
-    const timestamp = Date.now();
-    const extension = path.extname(file.originalname);
-    const fileName = `dossier_rh_${employeeId}_${timestamp}${extension}`;
-    cb(null, fileName);
-  }
-});
-
-const upload = multer({
-  storage: storage,
-  limits: {
-    fileSize: 10 * 1024 * 1024
-  },
-  fileFilter: (req, file, cb) => {
-    if (file.mimetype === 'application/pdf' || file.mimetype.startsWith('image/')) {
-      cb(null, true);
-    } else {
-      cb(new Error('Type de fichier non supporté. Utilisez PDF ou images.'), false);
-    }
-  }
-});
-
-// Servir les fichiers statiques
-app.use('/public', express.static(uploadDir));
-
+// =========================
 // Test connexion BDD
+// =========================
+
 pool
   .connect()
   .then((client) => {
@@ -131,11 +117,15 @@ pool
     });
   });
 
+// Gestion des erreurs de pool
 pool.on('error', (err) => {
   console.error('❌ Erreur inattendue du pool PostgreSQL:', err);
 });
 
+// =========================
 // Middleware d'authentification
+// =========================
+
 const authenticateToken = (req, res, next) => {
   const authHeader = req.headers['authorization'];
   const token = authHeader && authHeader.split(' ')[1];
@@ -153,7 +143,10 @@ const authenticateToken = (req, res, next) => {
   });
 };
 
+// =========================
 // Fonctions utilitaires
+// =========================
+
 function isValidUrl(string) {
   try {
     new URL(string);
@@ -166,15 +159,27 @@ function isValidUrl(string) {
 function getDefaultAvatar(nom, prenom) {
   const initiales = (prenom.charAt(0) + nom.charAt(0)).toUpperCase();
   const colors = [
-    'FF6B6B', '4ECDC4', '45B7D1', '96CEB4', 'FFEAA7',
-    'DDA0DD', '98D8C8', 'F7DC6F', 'BB8FCE', '85C1E9'
+    'FF6B6B',
+    '4ECDC4',
+    '45B7D1',
+    '96CEB4',
+    'FFEAA7',
+    'DDA0DD',
+    '98D8C8',
+    'F7DC6F',
+    'BB8FCE',
+    '85C1E9'
   ];
   const color = colors[Math.floor(Math.random() * colors.length)];
 
   return `https://ui-avatars.com/api/?name=${initiales}&background=${color}&color=fff&size=150`;
 }
 
-// Routes
+// =========================
+// ROUTES RH
+// =========================
+
+// Route racine
 app.get('/', (req, res) => {
   res.json({
     message: '🚀 API RH Manager - Connecté à Azure PostgreSQL',
@@ -190,7 +195,6 @@ app.get('/', (req, res) => {
       'PUT  /api/employees/:id',
       'PUT  /api/employees/:id/archive',
       'POST /api/employees',
-      'POST /api/employees/upload-dossier-rh',
       'GET  /api/demandes',
       'GET  /api/demandes/:id',
       'POST /api/demandes',
@@ -201,6 +205,7 @@ app.get('/', (req, res) => {
   });
 });
 
+// Route de santé
 app.get('/api/health', async (req, res) => {
   try {
     console.log('🏥 Health check - Tentative de connexion à la base...');
@@ -248,7 +253,10 @@ app.get('/api/health', async (req, res) => {
   }
 });
 
+// =========================
 // Authentification
+// =========================
+
 app.post('/api/auth/login', async (req, res) => {
   try {
     console.log('🔐 Tentative de login:', { email: req.body.email });
@@ -262,10 +270,12 @@ app.post('/api/auth/login', async (req, res) => {
       });
     }
 
+    // Vérifier la connexion à la base
     const client = await pool.connect();
     console.log('✅ Connexion pool établie pour login');
 
     try {
+      // Rechercher l'utilisateur
       const userResult = await client.query(
         'SELECT * FROM users WHERE email = $1',
         [email]
@@ -282,6 +292,7 @@ app.post('/api/auth/login', async (req, res) => {
       const user = userResult.rows[0];
       console.log('👤 Utilisateur trouvé:', user.email);
 
+      // Vérifier le mot de passe
       const isPasswordValid = await bcrypt.compare(password, user.password);
 
       if (isPasswordValid) {
@@ -329,58 +340,10 @@ app.post('/api/auth/login', async (req, res) => {
   }
 });
 
-// Route d'upload pour Azure App Service
-app.post('/api/employees/upload-dossier-rh', authenticateToken, upload.single('dossier_rh'), async (req, res) => {
-  try {
-    console.log('📤 Upload dossier RH sur Azure App Service');
-    
-    if (!req.file) {
-      return res.status(400).json({
-        success: false,
-        error: 'Aucun fichier fourni'
-      });
-    }
-    
-    const { employee_id } = req.body;
-    
-    if (!employee_id) {
-      return res.status(400).json({
-        success: false,
-        error: 'ID employé manquant'
-      });
-    }
+// =========================
+// Routes Employés
+// =========================
 
-    // Générer l'URL accessible
-    const baseUrl = process.env.FRONTEND_URL || 'https://votre-app.azurewebsites.net';
-    const fileUrl = `${baseUrl}/public/uploads/${req.file.filename}`;
-    
-    console.log('✅ Fichier uploadé:', fileUrl);
-
-    // Mettre à jour l'employé dans la base
-    const result = await pool.query(
-      'UPDATE employees SET dossier_rh = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2 RETURNING *',
-      [fileUrl, employee_id]
-    );
-
-    res.json({
-      success: true,
-      message: 'Dossier RH uploadé avec succès',
-      fileUrl: fileUrl,
-      fileName: req.file.filename,
-      employee: result.rows[0]
-    });
-    
-  } catch (error) {
-    console.error('❌ Erreur upload dossier RH:', error);
-    res.status(500).json({
-      success: false,
-      error: 'Erreur lors de l\'upload du dossier RH',
-      message: error.message
-    });
-  }
-});
-
-// Routes Employés existantes
 app.get('/api/employees', authenticateToken, async (req, res) => {
   try {
     console.log('👥 Récupération des employés actifs');
@@ -689,7 +652,11 @@ app.post('/api/employees', authenticateToken, async (req, res) => {
   }
 });
 
-// Routes Demandes RH (existantes)
+// =========================
+// Routes Demandes RH
+// =========================
+
+// GET toutes les demandes RH avec filtres (version corrigée)
 app.get('/api/demandes', authenticateToken, async (req, res) => {
   try {
     const {
@@ -721,19 +688,24 @@ app.get('/api/demandes', authenticateToken, async (req, res) => {
              e.matricule as employe_matricule,
              e.mail_responsable1,
              e.mail_responsable2,
+             -- Récupérer les infos du responsable 1
              r1.nom as responsable1_nom,
              r1.prenom as responsable1_prenom,
+             -- Récupérer les infos du responsable 2
              r2.nom as responsable2_nom,
              r2.prenom as responsable2_prenom
       FROM demande_rh d
       LEFT JOIN employees e ON d.employe_id = e.id
+      -- Jointure pour le responsable 1
       LEFT JOIN employees r1 ON e.mail_responsable1 = r1.adresse_mail
+      -- Jointure pour le responsable 2
       LEFT JOIN employees r2 ON e.mail_responsable2 = r2.adresse_mail
       WHERE 1=1
     `;
     const params = [];
     let paramCount = 0;
 
+    // Filtres
     if (type_demande) {
       paramCount++;
       query += ` AND d.type_demande = $${paramCount}`;
@@ -761,11 +733,13 @@ app.get('/api/demandes', authenticateToken, async (req, res) => {
       params.push(date_fin);
     }
 
+    // Ordre et pagination
     query += ` ORDER BY d.created_at DESC LIMIT $${paramCount + 1} OFFSET $${paramCount + 2}`;
     params.push(parseInt(limit), (parseInt(page) - 1) * parseInt(limit));
 
     const result = await pool.query(query, params);
 
+    // Count pour la pagination
     let countQuery = `SELECT COUNT(*) FROM demande_rh d WHERE 1=1`;
     const countParams = [];
     let countParamCount = 0;
@@ -820,6 +794,7 @@ app.get('/api/demandes', authenticateToken, async (req, res) => {
   }
 });
 
+// GET une demande spécifique (version corrigée)
 app.get('/api/demandes/:id', authenticateToken, async (req, res) => {
   try {
     const { id } = req.params;
@@ -834,13 +809,17 @@ app.get('/api/demandes/:id', authenticateToken, async (req, res) => {
              e.matricule as employe_matricule,
              e.mail_responsable1,
              e.mail_responsable2,
+             -- Récupérer les infos du responsable 1
              r1.nom as responsable1_nom,
              r1.prenom as responsable1_prenom,
+             -- Récupérer les infos du responsable 2
              r2.nom as responsable2_nom,
              r2.prenom as responsable2_prenom
       FROM demande_rh d
       LEFT JOIN employees e ON d.employe_id = e.id
+      -- Jointure pour le responsable 1
       LEFT JOIN employees r1 ON e.mail_responsable1 = r1.adresse_mail
+      -- Jointure pour le responsable 2
       LEFT JOIN employees r2 ON e.mail_responsable2 = r2.adresse_mail
       WHERE d.id = $1
     `, [id]);
@@ -860,6 +839,7 @@ app.get('/api/demandes/:id', authenticateToken, async (req, res) => {
   }
 });
 
+// POST nouvelle demande
 app.post('/api/demandes', authenticateToken, async (req, res) => {
   try {
     console.log('➕ Création nouvelle demande RH');
@@ -879,6 +859,7 @@ app.post('/api/demandes', authenticateToken, async (req, res) => {
       commentaire_refus
     } = req.body;
 
+    // Validation des champs obligatoires
     if (!employe_id || !type_demande || !titre) {
       return res.status(400).json({
         error: 'Employé, type de demande et titre sont obligatoires'
@@ -919,6 +900,7 @@ app.post('/api/demandes', authenticateToken, async (req, res) => {
   }
 });
 
+// PUT mise à jour demande
 app.put('/api/demandes/:id', authenticateToken, async (req, res) => {
   try {
     const { id } = req.params;
@@ -983,6 +965,7 @@ app.put('/api/demandes/:id', authenticateToken, async (req, res) => {
   }
 });
 
+// PUT statut demande
 app.put('/api/demandes/:id/statut', authenticateToken, async (req, res) => {
   try {
     const { id } = req.params;
@@ -1012,6 +995,7 @@ app.put('/api/demandes/:id/statut', authenticateToken, async (req, res) => {
   }
 });
 
+// DELETE demande
 app.delete('/api/demandes/:id', authenticateToken, async (req, res) => {
   try {
     const { id } = req.params;
@@ -1034,7 +1018,10 @@ app.delete('/api/demandes/:id', authenticateToken, async (req, res) => {
   }
 });
 
+// =========================
 // Routes fallback & erreurs
+// =========================
+
 app.use('*', (req, res) => {
   res.status(404).json({
     error: 'Route non trouvée',
@@ -1050,7 +1037,10 @@ app.use((err, req, res, next) => {
   });
 });
 
-// Démarrage du serveur
+// =========================
+// DÉMARRAGE DU SERVEUR
+// =========================
+
 app.listen(PORT, () => {
   console.log('\n' + '='.repeat(60));
   console.log('🚀 SERVEUR RH DÉMARRÉ');
@@ -1060,7 +1050,7 @@ app.listen(PORT, () => {
   console.log(`🗄️  Base: ${process.env.DB_NAME} @ ${process.env.DB_HOST}`);
   console.log(`🔐 JWT: ${process.env.JWT_SECRET ? '✅' : '⚠️'}`);
   console.log(`🌍 ENV: ${process.env.NODE_ENV || 'development'}`);
-  console.log('📁 Upload dossier RH activé');
+  console.log('📋 Nouvelles routes demandes RH activées');
   console.log('='.repeat(60) + '\n');
 });
 
