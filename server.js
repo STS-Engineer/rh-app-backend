@@ -6,9 +6,14 @@ const cors = require('cors');
 const { Pool } = require('pg');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
+const multer = require('multer');
+const axios = require('axios');
 
 const app = express();
 const PORT = Number(process.env.PORT || 5000);
+
+// Configuration multer pour l'upload de fichiers
+const upload = multer();
 
 // =========================
 // Configuration de la base
@@ -21,7 +26,7 @@ const dbConfig = {
   password: process.env.DB_PASSWORD,
   port: Number(process.env.DB_PORT || 5432),
   ssl: { require: true, rejectUnauthorized: false },
-  connectionTimeoutMillis: 10000, // 10 secondes
+  connectionTimeoutMillis: 10000,
   idleTimeoutMillis: 30000
 };
 
@@ -37,34 +42,9 @@ console.log('🔧 Configuration de la base de données:', {
 const pool = new Pool(dbConfig);
 
 // =========================
-// Logs de configuration
-// =========================
-
-console.log('🔧 Variables d\'environnement:', {
-  DB_USER: process.env.DB_USER || '❌ Manquant',
-  DB_HOST: process.env.DB_HOST || '❌ Manquant',
-  DB_NAME: process.env.DB_NAME || '❌ Manquant',
-  DB_PORT: process.env.DB_PORT || '5432 (défaut)',
-  JWT_SECRET: process.env.JWT_SECRET ? '✅ Défini' : '❌ Manquant',
-  FRONTEND_URL: process.env.FRONTEND_URL || '❌ Non défini',
-  NODE_ENV: process.env.NODE_ENV || 'development'
-});
-
-// Vérification et définition de JWT_SECRET
-const JWT_SECRET =
-  process.env.JWT_SECRET || 'fallback_secret_pour_development_seulement_2024';
-
-if (!process.env.JWT_SECRET) {
-  console.warn(
-    '⚠️  JWT_SECRET non défini dans .env - utilisation d\'un secret de développement'
-  );
-}
-
-// =========================
 // Middleware globaux
 // =========================
 
-// Gestion CORS (local + Azure)
 const allowedOrigins = [
   'http://localhost:3000',
   'https://avo-hr-managment.azurewebsites.net'
@@ -76,9 +56,7 @@ if (process.env.FRONTEND_URL && !allowedOrigins.includes(process.env.FRONTEND_UR
 
 const corsOptions = {
   origin(origin, callback) {
-    // Autoriser les outils sans header Origin (Postman, curl…)
     if (!origin) return callback(null, true);
-
     if (allowedOrigins.includes(origin)) {
       return callback(null, true);
     } else {
@@ -91,14 +69,14 @@ const corsOptions = {
 
 app.use(cors(corsOptions));
 app.options('*', cors(corsOptions));
-app.use(express.json());
+app.use(express.json({ limit: '50mb' }));
+app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
 // =========================
 // Test connexion BDD
 // =========================
 
-pool
-  .connect()
+pool.connect()
   .then((client) => {
     console.log('✅ Connexion à PostgreSQL réussie pour RH Application');
     return client.query('SELECT version(), current_database()');
@@ -108,13 +86,7 @@ pool
     pool.query('SELECT 1').then(() => console.log('✅ Pool PostgreSQL opérationnel'));
   })
   .catch((err) => {
-    console.error('❌ ERREUR DE CONNEXION PostgreSQL:', {
-      message: err.message,
-      code: err.code,
-      host: process.env.DB_HOST,
-      port: process.env.DB_PORT,
-      stack: err.stack
-    });
+    console.error('❌ ERREUR DE CONNEXION PostgreSQL:', err.message);
   });
 
 // Gestion des erreurs de pool
@@ -134,7 +106,7 @@ const authenticateToken = (req, res, next) => {
     return res.sendStatus(401);
   }
 
-  jwt.verify(token, JWT_SECRET, (err, user) => {
+  jwt.verify(token, process.env.JWT_SECRET || 'fallback_secret', (err, user) => {
     if (err) {
       return res.sendStatus(403);
     }
@@ -159,96 +131,86 @@ function isValidUrl(string) {
 function getDefaultAvatar(nom, prenom) {
   const initiales = (prenom.charAt(0) + nom.charAt(0)).toUpperCase();
   const colors = [
-    'FF6B6B',
-    '4ECDC4',
-    '45B7D1',
-    '96CEB4',
-    'FFEAA7',
-    'DDA0DD',
-    '98D8C8',
-    'F7DC6F',
-    'BB8FCE',
-    '85C1E9'
+    'FF6B6B', '4ECDC4', '45B7D1', '96CEB4', 'FFEAA7',
+    'DDA0DD', '98D8C8', 'F7DC6F', 'BB8FCE', '85C1E9'
   ];
   const color = colors[Math.floor(Math.random() * colors.length)];
-
   return `https://ui-avatars.com/api/?name=${initiales}&background=${color}&color=fff&size=150`;
 }
 
 // =========================
-// ROUTES RH
+// Test connexion GitHub
 // =========================
 
-// Route racine
+const testGitHubConnection = async () => {
+  try {
+    const GITHUB_TOKEN = process.env.GITHUB_TOKEN;
+    const GITHUB_OWNER = 'STS-Engineer';
+    const GITHUB_REPO = 'rh-documents-repository';
+    
+    if (!GITHUB_TOKEN) {
+      console.warn('⚠️ Token GitHub non configuré');
+      return false;
+    }
+
+    const testUrl = `https://api.github.com/repos/${GITHUB_OWNER}/${GITHUB_REPO}`;
+    
+    const response = await axios.get(testUrl, {
+      headers: {
+        'Authorization': `token ${GITHUB_TOKEN}`,
+        'User-Agent': 'RH-Manager-App'
+      }
+    });
+    
+    console.log('✅ Connexion GitHub réussie:', response.data.full_name);
+    return true;
+  } catch (error) {
+    console.error('❌ Erreur connexion GitHub:', error.response?.data?.message || error.message);
+    return false;
+  }
+};
+
+// Tester la connexion GitHub au démarrage
+setTimeout(testGitHubConnection, 2000);
+
+// =========================
+// ROUTES PRINCIPALES
+// =========================
+
 app.get('/', (req, res) => {
   res.json({
-    message: '🚀 API RH Manager - Connecté à Azure PostgreSQL',
+    message: '🚀 API RH Manager - Connecté à Azure PostgreSQL & GitHub',
     timestamp: new Date().toISOString(),
-    database: 'Azure PostgreSQL',
-    environment: process.env.NODE_ENV || 'development',
-    endpoints: [
-      'GET  /api/health',
-      'POST /api/auth/login',
-      'GET  /api/employees',
-      'GET  /api/employees/archives',
-      'GET  /api/employees/search?q=nom',
-      'PUT  /api/employees/:id',
-      'PUT  /api/employees/:id/archive',
-      'POST /api/employees',
-      'GET  /api/demandes',
-      'GET  /api/demandes/:id',
-      'POST /api/demandes',
-      'PUT  /api/demandes/:id',
-      'PUT  /api/demandes/:id/statut',
-      'DELETE /api/demandes/:id'
-    ]
+    environment: process.env.NODE_ENV || 'development'
   });
 });
 
-// Route de santé
 app.get('/api/health', async (req, res) => {
   try {
-    console.log('🏥 Health check - Tentative de connexion à la base...');
-    
     const client = await pool.connect();
-    console.log('✅ Client connecté');
-    
     const result = await client.query('SELECT version(), current_database()');
     client.release();
-    
-    console.log('✅ Requête exécutée avec succès');
+
+    const githubStatus = await testGitHubConnection();
 
     res.json({
       status: 'OK ✅',
-      message: 'Backend RH opérationnel',
       database: {
         connected: true,
-        version: result.rows[0].version,
-        name: result.rows[0].current_database,
-        host: process.env.DB_HOST,
-        port: process.env.DB_PORT
+        name: result.rows[0].current_database
       },
-      jwt: process.env.JWT_SECRET ? 'Configuré' : 'Utilisation fallback',
-      environment: process.env.NODE_ENV || 'development',
+      github: {
+        connected: githubStatus,
+        repository: 'STS-Engineer/rh-documents-repository'
+      },
       timestamp: new Date().toISOString()
     });
   } catch (error) {
-    console.error('❌ Health check échoué:', {
-      message: error.message,
-      code: error.code,
-      stack: error.stack
-    });
-    
+    console.error('❌ Health check échoué:', error.message);
     res.status(500).json({
       status: 'Error',
       message: 'Erreur base de données',
-      error: error.message,
-      code: error.code,
-      details: {
-        host: process.env.DB_HOST,
-        port: process.env.DB_PORT,
-        database: process.env.DB_NAME
-      }
+      error: error.message
     });
   }
 });
@@ -270,12 +232,9 @@ app.post('/api/auth/login', async (req, res) => {
       });
     }
 
-    // Vérifier la connexion à la base
     const client = await pool.connect();
-    console.log('✅ Connexion pool établie pour login');
-
+    
     try {
-      // Rechercher l'utilisateur
       const userResult = await client.query(
         'SELECT * FROM users WHERE email = $1',
         [email]
@@ -290,9 +249,6 @@ app.post('/api/auth/login', async (req, res) => {
       }
 
       const user = userResult.rows[0];
-      console.log('👤 Utilisateur trouvé:', user.email);
-
-      // Vérifier le mot de passe
       const isPasswordValid = await bcrypt.compare(password, user.password);
 
       if (isPasswordValid) {
@@ -303,7 +259,7 @@ app.post('/api/auth/login', async (req, res) => {
             userId: user.id,
             email: user.email
           },
-          JWT_SECRET,
+          process.env.JWT_SECRET || 'fallback_secret',
           { expiresIn: '24h' }
         );
 
@@ -326,12 +282,7 @@ app.post('/api/auth/login', async (req, res) => {
       client.release();
     }
   } catch (error) {
-    console.error('💥 Erreur lors du login:', {
-      message: error.message,
-      code: error.code,
-      stack: error.stack
-    });
-
+    console.error('💥 Erreur lors du login:', error.message);
     res.status(500).json({
       success: false,
       message: 'Erreur serveur lors de la connexion',
@@ -410,7 +361,6 @@ app.get('/api/employees/search', authenticateToken, async (req, res) => {
     query += ' ORDER BY nom, prenom';
 
     const result = await pool.query(query, params);
-
     console.log(`✅ ${result.rows.length} employés trouvés`);
     res.json(result.rows);
   } catch (error) {
@@ -427,14 +377,10 @@ app.get('/api/employees/:id', authenticateToken, async (req, res) => {
     const { id } = req.params;
     console.log('👤 Récupération employé ID:', id);
 
-    const result = await pool.query('SELECT * FROM employees WHERE id = $1', [
-      id
-    ]);
+    const result = await pool.query('SELECT * FROM employees WHERE id = $1', [id]);
 
     if (result.rows.length === 0) {
-      return res.status(404).json({
-        error: 'Employé non trouvé'
-      });
+      return res.status(404).json({ error: 'Employé non trouvé' });
     }
 
     res.json(result.rows[0]);
@@ -453,20 +399,9 @@ app.put('/api/employees/:id', authenticateToken, async (req, res) => {
     console.log('✏️ Mise à jour employé ID:', id);
 
     const {
-      matricule,
-      nom,
-      prenom,
-      cin,
-      passeport,
-      date_naissance,
-      poste,
-      site_dep,
-      type_contrat,
-      date_debut,
-      salaire_brute,
-      photo,
-      dossier_rh,
-      date_depart
+      matricule, nom, prenom, cin, passeport, date_naissance,
+      poste, site_dep, type_contrat, date_debut, salaire_brute,
+      photo, dossier_rh, date_depart
     } = req.body;
 
     let photoUrl = photo;
@@ -477,38 +412,21 @@ app.put('/api/employees/:id', authenticateToken, async (req, res) => {
     }
 
     const result = await pool.query(
-      `
-      UPDATE employees 
-      SET matricule = $1, nom = $2, prenom = $3, cin = $4, passeport = $5,
-          date_naissance = $6, poste = $7, site_dep = $8, type_contrat = $9,
-          date_debut = $10, salaire_brute = $11, photo = $12, dossier_rh = $13,
-          date_depart = $14, updated_at = CURRENT_TIMESTAMP
-      WHERE id = $15
-      RETURNING *
-    `,
+      `UPDATE employees 
+       SET matricule = $1, nom = $2, prenom = $3, cin = $4, passeport = $5,
+           date_naissance = $6, poste = $7, site_dep = $8, type_contrat = $9,
+           date_debut = $10, salaire_brute = $11, photo = $12, dossier_rh = $13,
+           date_depart = $14, updated_at = CURRENT_TIMESTAMP
+       WHERE id = $15 RETURNING *`,
       [
-        matricule,
-        nom,
-        prenom,
-        cin,
-        passeport,
-        date_naissance,
-        poste,
-        site_dep,
-        type_contrat,
-        date_debut,
-        salaire_brute,
-        photoUrl,
-        dossier_rh,
-        date_depart,
-        id
+        matricule, nom, prenom, cin, passeport, date_naissance,
+        poste, site_dep, type_contrat, date_debut, salaire_brute,
+        photoUrl, dossier_rh, date_depart, id
       ]
     );
 
     if (result.rows.length === 0) {
-      return res.status(404).json({
-        error: 'Employé non trouvé'
-      });
+      return res.status(404).json({ error: 'Employé non trouvé' });
     }
 
     console.log('✅ Employé mis à jour');
@@ -522,6 +440,120 @@ app.put('/api/employees/:id', authenticateToken, async (req, res) => {
   }
 });
 
+// =========================
+// UPLOAD DOSSIER RH VERS GITHUB
+// =========================
+
+app.post('/api/employees/upload-dossier-rh', authenticateToken, upload.single('file'), async (req, res) => {
+  try {
+    const { employeeId, matricule } = req.body;
+    const file = req.file;
+
+    if (!file) {
+      return res.status(400).json({ error: 'Aucun fichier fourni' });
+    }
+
+    console.log('📤 Upload dossier RH pour employé:', { matricule, employeeId, fileSize: file.size });
+
+    // Configuration GitHub
+    const GITHUB_TOKEN = process.env.GITHUB_TOKEN;
+    const GITHUB_OWNER = 'STS-Engineer';
+    const GITHUB_REPO = 'rh-documents-repository';
+    
+    if (!GITHUB_TOKEN) {
+      throw new Error('Token GitHub non configuré. Veuillez configurer GITHUB_TOKEN dans les variables d\'environnement.');
+    }
+
+    // Préparer le fichier pour GitHub
+    const filename = `dossier_rh_${matricule}_${Date.now()}.pdf`;
+    const filePath = `pdf_rh/${filename}`;
+    
+    // Convertir le buffer en base64
+    const fileContentBase64 = file.buffer.toString('base64');
+
+    // URL de l'API GitHub
+    const githubApiUrl = `https://api.github.com/repos/${GITHUB_OWNER}/${GITHUB_REPO}/contents/${filePath}`;
+
+    // Préparer les données pour GitHub
+    const githubData = {
+      message: `📄 Ajout dossier RH - ${matricule} - ${new Date().toISOString().split('T')[0]}`,
+      content: fileContentBase64,
+      branch: 'main'
+    };
+
+    console.log('📁 Upload vers GitHub...', { filePath, size: fileContentBase64.length });
+
+    // Upload vers GitHub
+    const githubResponse = await axios.put(githubApiUrl, githubData, {
+      headers: {
+        'Authorization': `token ${GITHUB_TOKEN}`,
+        'Content-Type': 'application/json',
+        'User-Agent': 'RH-Manager-App'
+      },
+      timeout: 30000
+    });
+
+    if (githubResponse.status === 201 || githubResponse.status === 200) {
+      // Construire l'URL raw du fichier (format demandé)
+      const pdfUrl = `https://github.com/${GITHUB_OWNER}/${GITHUB_REPO}/raw/main/${filePath}`;
+      
+      console.log('✅ Fichier uploadé vers GitHub:', pdfUrl);
+
+      // Mettre à jour l'employé avec le nouveau lien dans la colonne dossier_rh
+      const updateResult = await pool.query(
+        'UPDATE employees SET dossier_rh = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2 RETURNING *',
+        [pdfUrl, employeeId]
+      );
+
+      if (updateResult.rows.length === 0) {
+        throw new Error('Employé non trouvé lors de la mise à jour');
+      }
+
+      res.json({
+        success: true,
+        pdfUrl: pdfUrl,
+        githubUrl: githubResponse.data.content.html_url,
+        filename: filename,
+        message: 'Dossier RH uploadé avec succès vers GitHub'
+      });
+    } else {
+      throw new Error(`Erreur GitHub: ${githubResponse.status}`);
+    }
+
+  } catch (error) {
+    console.error('❌ Erreur upload dossier RH:', error);
+    
+    let errorMessage = 'Erreur lors de l\'upload du dossier RH vers GitHub';
+    
+    if (error.response) {
+      console.error('Détails erreur GitHub:', {
+        status: error.response.status,
+        data: error.response.data
+      });
+      
+      if (error.response.status === 401) {
+        errorMessage = 'Token GitHub invalide ou expiré';
+      } else if (error.response.status === 403) {
+        errorMessage = 'Accès refusé au repository GitHub';
+      } else if (error.response.status === 404) {
+        errorMessage = 'Repository GitHub non trouvé';
+      } else {
+        errorMessage = `Erreur GitHub: ${error.response.data?.message || error.response.status}`;
+      }
+    } else if (error.code === 'ECONNABORTED') {
+      errorMessage = 'Timeout lors de l\'upload vers GitHub';
+    } else {
+      errorMessage += `: ${error.message}`;
+    }
+
+    res.status(500).json({
+      success: false,
+      error: errorMessage,
+      details: error.response?.data
+    });
+  }
+});
+
 app.put('/api/employees/:id/archive', authenticateToken, async (req, res) => {
   try {
     const { id } = req.params;
@@ -530,22 +562,17 @@ app.put('/api/employees/:id/archive', authenticateToken, async (req, res) => {
     console.log('📁 Archivage employé ID:', id);
 
     const result = await pool.query(
-      `
-      UPDATE employees 
-      SET date_depart = CURRENT_DATE, 
-          entretien_depart = $1,
-          statut = 'archive',
-          updated_at = CURRENT_TIMESTAMP
-      WHERE id = $2
-      RETURNING *
-    `,
+      `UPDATE employees 
+       SET date_depart = CURRENT_DATE, 
+           entretien_depart = $1,
+           statut = 'archive',
+           updated_at = CURRENT_TIMESTAMP
+       WHERE id = $2 RETURNING *`,
       [entretien_depart, id]
     );
 
     if (result.rows.length === 0) {
-      return res.status(404).json({
-        error: 'Employé non trouvé'
-      });
+      return res.status(404).json({ error: 'Employé non trouvé' });
     }
 
     console.log('✅ Employé archivé');
@@ -564,32 +591,12 @@ app.post('/api/employees', authenticateToken, async (req, res) => {
     console.log('➕ Création nouvel employé');
 
     const {
-      matricule,
-      nom,
-      prenom,
-      cin,
-      passeport,
-      date_naissance,
-      poste,
-      site_dep,
-      type_contrat,
-      date_debut,
-      salaire_brute,
-      photo,
-      dossier_rh
+      matricule, nom, prenom, cin, passeport, date_naissance,
+      poste, site_dep, type_contrat, date_debut, salaire_brute,
+      photo, dossier_rh
     } = req.body;
 
-    if (
-      !matricule ||
-      !nom ||
-      !prenom ||
-      !cin ||
-      !poste ||
-      !site_dep ||
-      !type_contrat ||
-      !date_debut ||
-      !salaire_brute
-    ) {
+    if (!matricule || !nom || !prenom || !cin || !poste || !site_dep || !type_contrat || !date_debut || !salaire_brute) {
       return res.status(400).json({
         error: 'Tous les champs obligatoires doivent être remplis'
       });
@@ -601,26 +608,14 @@ app.post('/api/employees', authenticateToken, async (req, res) => {
     }
 
     const result = await pool.query(
-      `
-      INSERT INTO employees 
-      (matricule, nom, prenom, cin, passeport, date_naissance, poste, site_dep, type_contrat, date_debut, salaire_brute, photo, dossier_rh, statut) 
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, 'actif')
-      RETURNING *
-    `,
+      `INSERT INTO employees 
+       (matricule, nom, prenom, cin, passeport, date_naissance, poste, site_dep, type_contrat, date_debut, salaire_brute, photo, dossier_rh, statut) 
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, 'actif')
+       RETURNING *`,
       [
-        matricule,
-        nom,
-        prenom,
-        cin,
-        passeport || null,
-        date_naissance,
-        poste,
-        site_dep,
-        type_contrat,
-        date_debut,
-        parseFloat(salaire_brute),
-        photoUrl,
-        dossier_rh || null
+        matricule, nom, prenom, cin, passeport || null, date_naissance,
+        poste, site_dep, type_contrat, date_debut, parseFloat(salaire_brute),
+        photoUrl, dossier_rh || null
       ]
     );
 
@@ -631,17 +626,11 @@ app.post('/api/employees', authenticateToken, async (req, res) => {
 
     if (error.code === '23505') {
       if (error.constraint === 'employees_matricule_key') {
-        res.status(400).json({
-          error: 'Le matricule existe déjà'
-        });
+        res.status(400).json({ error: 'Le matricule existe déjà' });
       } else if (error.constraint === 'employees_cin_key') {
-        res.status(400).json({
-          error: 'Le CIN existe déjà'
-        });
+        res.status(400).json({ error: 'Le CIN existe déjà' });
       } else {
-        res.status(400).json({
-          error: 'Violation de contrainte unique'
-        });
+        res.status(400).json({ error: 'Violation de contrainte unique' });
       }
     } else {
       res.status(500).json({
@@ -653,31 +642,12 @@ app.post('/api/employees', authenticateToken, async (req, res) => {
 });
 
 // =========================
-// Routes Demandes RH
+// Routes Demandes RH (conservées)
 // =========================
 
-// GET toutes les demandes RH avec filtres (version corrigée)
 app.get('/api/demandes', authenticateToken, async (req, res) => {
   try {
-    const {
-      type_demande,
-      statut,
-      date_debut,
-      date_fin,
-      employe_id,
-      page = 1,
-      limit = 10
-    } = req.query;
-
-    console.log('📋 Récupération des demandes RH avec filtres:', {
-      type_demande,
-      statut,
-      date_debut,
-      date_fin,
-      employe_id,
-      page,
-      limit
-    });
+    const { type_demande, statut, date_debut, date_fin, employe_id, page = 1, limit = 10 } = req.query;
 
     let query = `
       SELECT d.*, 
@@ -685,27 +655,14 @@ app.get('/api/demandes', authenticateToken, async (req, res) => {
              e.prenom as employe_prenom,
              e.poste as employe_poste,
              e.photo as employe_photo,
-             e.matricule as employe_matricule,
-             e.mail_responsable1,
-             e.mail_responsable2,
-             -- Récupérer les infos du responsable 1
-             r1.nom as responsable1_nom,
-             r1.prenom as responsable1_prenom,
-             -- Récupérer les infos du responsable 2
-             r2.nom as responsable2_nom,
-             r2.prenom as responsable2_prenom
+             e.matricule as employe_matricule
       FROM demande_rh d
       LEFT JOIN employees e ON d.employe_id = e.id
-      -- Jointure pour le responsable 1
-      LEFT JOIN employees r1 ON e.mail_responsable1 = r1.adresse_mail
-      -- Jointure pour le responsable 2
-      LEFT JOIN employees r2 ON e.mail_responsable2 = r2.adresse_mail
       WHERE 1=1
     `;
     const params = [];
     let paramCount = 0;
 
-    // Filtres
     if (type_demande) {
       paramCount++;
       query += ` AND d.type_demande = $${paramCount}`;
@@ -724,16 +681,6 @@ app.get('/api/demandes', authenticateToken, async (req, res) => {
       params.push(employe_id);
     }
 
-    if (date_debut && date_fin) {
-      paramCount++;
-      query += ` AND d.date_depart BETWEEN $${paramCount}`;
-      params.push(date_debut);
-      paramCount++;
-      query += ` AND $${paramCount}`;
-      params.push(date_fin);
-    }
-
-    // Ordre et pagination
     query += ` ORDER BY d.created_at DESC LIMIT $${paramCount + 1} OFFSET $${paramCount + 2}`;
     params.push(parseInt(limit), (parseInt(page) - 1) * parseInt(limit));
 
@@ -756,26 +703,10 @@ app.get('/api/demandes', authenticateToken, async (req, res) => {
       countParams.push(statut);
     }
 
-    if (employe_id) {
-      countParamCount++;
-      countQuery += ` AND d.employe_id = $${countParamCount}`;
-      countParams.push(employe_id);
-    }
-
-    if (date_debut && date_fin) {
-      countParamCount++;
-      countQuery += ` AND d.date_depart BETWEEN $${countParamCount}`;
-      countParams.push(date_debut);
-      countParamCount++;
-      countQuery += ` AND $${countParamCount}`;
-      countParams.push(date_fin);
-    }
-
     const countResult = await pool.query(countQuery, countParams);
     const total = parseInt(countResult.rows[0].count);
 
-    console.log(`✅ ${result.rows.length} demandes récupérées sur ${total} total`);
-
+    console.log(`✅ ${result.rows.length} demandes récupérées`);
     res.json({
       demandes: result.rows,
       pagination: {
@@ -789,230 +720,6 @@ app.get('/api/demandes', authenticateToken, async (req, res) => {
     console.error('❌ Erreur récupération demandes:', error);
     res.status(500).json({ 
       error: 'Erreur lors de la récupération des demandes',
-      message: error.message 
-    });
-  }
-});
-
-// GET une demande spécifique (version corrigée)
-app.get('/api/demandes/:id', authenticateToken, async (req, res) => {
-  try {
-    const { id } = req.params;
-    console.log('📄 Récupération demande ID:', id);
-    
-    const result = await pool.query(`
-      SELECT d.*, 
-             e.nom as employe_nom, 
-             e.prenom as employe_prenom,
-             e.poste as employe_poste,
-             e.photo as employe_photo,
-             e.matricule as employe_matricule,
-             e.mail_responsable1,
-             e.mail_responsable2,
-             -- Récupérer les infos du responsable 1
-             r1.nom as responsable1_nom,
-             r1.prenom as responsable1_prenom,
-             -- Récupérer les infos du responsable 2
-             r2.nom as responsable2_nom,
-             r2.prenom as responsable2_prenom
-      FROM demande_rh d
-      LEFT JOIN employees e ON d.employe_id = e.id
-      -- Jointure pour le responsable 1
-      LEFT JOIN employees r1 ON e.mail_responsable1 = r1.adresse_mail
-      -- Jointure pour le responsable 2
-      LEFT JOIN employees r2 ON e.mail_responsable2 = r2.adresse_mail
-      WHERE d.id = $1
-    `, [id]);
-
-    if (result.rows.length === 0) {
-      return res.status(404).json({ error: 'Demande non trouvée' });
-    }
-
-    console.log('✅ Demande récupérée');
-    res.json(result.rows[0]);
-  } catch (error) {
-    console.error('❌ Erreur récupération demande:', error);
-    res.status(500).json({ 
-      error: 'Erreur lors de la récupération de la demande',
-      message: error.message 
-    });
-  }
-});
-
-// POST nouvelle demande
-app.post('/api/demandes', authenticateToken, async (req, res) => {
-  try {
-    console.log('➕ Création nouvelle demande RH');
-
-    const {
-      employe_id,
-      type_demande,
-      titre,
-      type_conge,
-      type_conge_autre,
-      date_depart,
-      date_retour,
-      heure_depart,
-      heure_retour,
-      demi_journee,
-      frais_deplacement,
-      commentaire_refus
-    } = req.body;
-
-    // Validation des champs obligatoires
-    if (!employe_id || !type_demande || !titre) {
-      return res.status(400).json({
-        error: 'Employé, type de demande et titre sont obligatoires'
-      });
-    }
-
-    const result = await pool.query(`
-      INSERT INTO demande_rh (
-        employe_id, type_demande, titre, type_conge, type_conge_autre,
-        date_depart, date_retour, heure_depart, heure_retour,
-        demi_journee, frais_deplacement, commentaire_refus, statut,
-        created_at, updated_at
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, 'en_attente', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-      RETURNING *
-    `, [
-      employe_id, 
-      type_demande, 
-      titre, 
-      type_conge || null, 
-      type_conge_autre || null,
-      date_depart || null, 
-      date_retour || null, 
-      heure_depart || null, 
-      heure_retour || null,
-      demi_journee || false, 
-      frais_deplacement ? parseFloat(frais_deplacement) : null, 
-      commentaire_refus || null
-    ]);
-
-    console.log('✅ Demande créée, ID:', result.rows[0].id);
-    res.status(201).json(result.rows[0]);
-  } catch (error) {
-    console.error('❌ Erreur création demande:', error);
-    res.status(500).json({ 
-      error: 'Erreur lors de la création de la demande',
-      message: error.message 
-    });
-  }
-});
-
-// PUT mise à jour demande
-app.put('/api/demandes/:id', authenticateToken, async (req, res) => {
-  try {
-    const { id } = req.params;
-    console.log('✏️ Mise à jour demande ID:', id);
-
-    const {
-      type_demande,
-      titre,
-      type_conge,
-      type_conge_autre,
-      date_depart,
-      date_retour,
-      heure_depart,
-      heure_retour,
-      demi_journee,
-      frais_deplacement,
-      statut,
-      approuve_responsable1,
-      approuve_responsable2,
-      commentaire_refus
-    } = req.body;
-
-    const result = await pool.query(`
-      UPDATE demande_rh 
-      SET type_demande = $1, titre = $2, type_conge = $3, type_conge_autre = $4,
-          date_depart = $5, date_retour = $6, heure_depart = $7, heure_retour = $8,
-          demi_journee = $9, frais_deplacement = $10, statut = $11,
-          approuve_responsable1 = $12, approuve_responsable2 = $13,
-          commentaire_refus = $14, updated_at = CURRENT_TIMESTAMP
-      WHERE id = $15
-      RETURNING *
-    `, [
-      type_demande, 
-      titre, 
-      type_conge || null, 
-      type_conge_autre || null,
-      date_depart || null, 
-      date_retour || null, 
-      heure_depart || null, 
-      heure_retour || null,
-      demi_journee || false, 
-      frais_deplacement ? parseFloat(frais_deplacement) : null, 
-      statut || 'en_attente',
-      approuve_responsable1 || false,
-      approuve_responsable2 || false,
-      commentaire_refus || null, 
-      id
-    ]);
-
-    if (result.rows.length === 0) {
-      return res.status(404).json({ error: 'Demande non trouvée' });
-    }
-
-    console.log('✅ Demande mise à jour');
-    res.json(result.rows[0]);
-  } catch (error) {
-    console.error('❌ Erreur mise à jour demande:', error);
-    res.status(500).json({ 
-      error: 'Erreur lors de la mise à jour de la demande',
-      message: error.message 
-    });
-  }
-});
-
-// PUT statut demande
-app.put('/api/demandes/:id/statut', authenticateToken, async (req, res) => {
-  try {
-    const { id } = req.params;
-    const { statut, commentaire_refus } = req.body;
-
-    console.log('🔄 Changement statut demande ID:', id, '->', statut);
-
-    const result = await pool.query(`
-      UPDATE demande_rh 
-      SET statut = $1, commentaire_refus = $2, updated_at = CURRENT_TIMESTAMP
-      WHERE id = $3
-      RETURNING *
-    `, [statut, commentaire_refus || null, id]);
-
-    if (result.rows.length === 0) {
-      return res.status(404).json({ error: 'Demande non trouvée' });
-    }
-
-    console.log('✅ Statut demande mis à jour');
-    res.json(result.rows[0]);
-  } catch (error) {
-    console.error('❌ Erreur changement statut:', error);
-    res.status(500).json({ 
-      error: 'Erreur lors du changement de statut',
-      message: error.message 
-    });
-  }
-});
-
-// DELETE demande
-app.delete('/api/demandes/:id', authenticateToken, async (req, res) => {
-  try {
-    const { id } = req.params;
-    console.log('🗑️ Suppression demande ID:', id);
-    
-    const result = await pool.query('DELETE FROM demande_rh WHERE id = $1 RETURNING *', [id]);
-
-    if (result.rows.length === 0) {
-      return res.status(404).json({ error: 'Demande non trouvée' });
-    }
-
-    console.log('✅ Demande supprimée');
-    res.json({ message: 'Demande supprimée avec succès', deleted: result.rows[0] });
-  } catch (error) {
-    console.error('❌ Erreur suppression demande:', error);
-    res.status(500).json({ 
-      error: 'Erreur lors de la suppression de la demande',
       message: error.message 
     });
   }
@@ -1043,14 +750,15 @@ app.use((err, req, res, next) => {
 
 app.listen(PORT, () => {
   console.log('\n' + '='.repeat(60));
-  console.log('🚀 SERVEUR RH DÉMARRÉ');
+  console.log('🚀 SERVEUR RH DÉMARRÉ - AVEC UPLOAD GITHUB');
   console.log('='.repeat(60));
   console.log(`📍 Port: ${PORT}`);
   console.log(`🌐 URL: http://localhost:${PORT}`);
   console.log(`🗄️  Base: ${process.env.DB_NAME} @ ${process.env.DB_HOST}`);
   console.log(`🔐 JWT: ${process.env.JWT_SECRET ? '✅' : '⚠️'}`);
-  console.log(`🌍 ENV: ${process.env.NODE_ENV || 'development'}`);
-  console.log('📋 Nouvelles routes demandes RH activées');
+  console.log(`🐙 GitHub: ${process.env.GITHUB_TOKEN ? '✅ Token configuré' : '⚠️ Token manquant'}`);
+  console.log(`📁 Repository: STS-Engineer/rh-documents-repository`);
+  console.log(`📄 Dossier PDF: pdf_rh/`);
   console.log('='.repeat(60) + '\n');
 });
 
