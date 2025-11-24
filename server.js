@@ -35,11 +35,23 @@ console.log('🔧 Configuration de la base de données:', {
   host: dbConfig.host,
   database: dbConfig.database,
   port: dbConfig.port,
-  ssl: 'Activé',
-  password: dbConfig.password ? '✅ Présent' : '❌ Manquant'
+  ssl: 'Activé'
 });
 
 const pool = new Pool(dbConfig);
+
+// =========================
+// Configuration GitHub
+// =========================
+
+const GITHUB_TOKEN = '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';
+const GITHUB_OWNER = 'STS-Engineer';
+const GITHUB_REPO = 'rh-documents-repository';
+
+console.log('🔐 Configuration GitHub:', {
+  token: GITHUB_TOKEN ? '✅ Présent' : '❌ Manquant',
+  repository: `${GITHUB_OWNER}/${GITHUB_REPO}`
+});
 
 // =========================
 // Middleware globaux
@@ -144,10 +156,6 @@ function getDefaultAvatar(nom, prenom) {
 
 const testGitHubConnection = async () => {
   try {
-    const GITHUB_TOKEN = process.env.GITHUB_TOKEN;
-    const GITHUB_OWNER = 'STS-Engineer';
-    const GITHUB_REPO = 'rh-documents-repository';
-    
     if (!GITHUB_TOKEN) {
       console.warn('⚠️ Token GitHub non configuré');
       return false;
@@ -181,7 +189,8 @@ app.get('/', (req, res) => {
   res.json({
     message: '🚀 API RH Manager - Connecté à Azure PostgreSQL & GitHub',
     timestamp: new Date().toISOString(),
-    environment: process.env.NODE_ENV || 'development'
+    environment: process.env.NODE_ENV || 'development',
+    github: `${GITHUB_OWNER}/${GITHUB_REPO}`
   });
 });
 
@@ -201,7 +210,7 @@ app.get('/api/health', async (req, res) => {
       },
       github: {
         connected: githubStatus,
-        repository: 'STS-Engineer/rh-documents-repository'
+        repository: `${GITHUB_OWNER}/${GITHUB_REPO}`
       },
       timestamp: new Date().toISOString()
     });
@@ -455,13 +464,8 @@ app.post('/api/employees/upload-dossier-rh', authenticateToken, upload.single('f
 
     console.log('📤 Upload dossier RH pour employé:', { matricule, employeeId, fileSize: file.size });
 
-    // Configuration GitHub
-    const GITHUB_TOKEN = process.env.GITHUB_TOKEN;
-    const GITHUB_OWNER = 'STS-Engineer';
-    const GITHUB_REPO = 'rh-documents-repository';
-    
     if (!GITHUB_TOKEN) {
-      throw new Error('Token GitHub non configuré. Veuillez configurer GITHUB_TOKEN dans les variables d\'environnement.');
+      throw new Error('Token GitHub non configuré.');
     }
 
     // Préparer le fichier pour GitHub
@@ -642,7 +646,7 @@ app.post('/api/employees', authenticateToken, async (req, res) => {
 });
 
 // =========================
-// Routes Demandes RH (conservées)
+// Routes Demandes RH
 // =========================
 
 app.get('/api/demandes', authenticateToken, async (req, res) => {
@@ -725,6 +729,212 @@ app.get('/api/demandes', authenticateToken, async (req, res) => {
   }
 });
 
+app.get('/api/demandes/:id', authenticateToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+    console.log('📄 Récupération demande ID:', id);
+    
+    const result = await pool.query(`
+      SELECT d.*, 
+             e.nom as employe_nom, 
+             e.prenom as employe_prenom,
+             e.poste as employe_poste,
+             e.photo as employe_photo,
+             e.matricule as employe_matricule
+      FROM demande_rh d
+      LEFT JOIN employees e ON d.employe_id = e.id
+      WHERE d.id = $1
+    `, [id]);
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'Demande non trouvée' });
+    }
+
+    console.log('✅ Demande récupérée');
+    res.json(result.rows[0]);
+  } catch (error) {
+    console.error('❌ Erreur récupération demande:', error);
+    res.status(500).json({ 
+      error: 'Erreur lors de la récupération de la demande',
+      message: error.message 
+    });
+  }
+});
+
+app.post('/api/demandes', authenticateToken, async (req, res) => {
+  try {
+    console.log('➕ Création nouvelle demande RH');
+
+    const {
+      employe_id,
+      type_demande,
+      titre,
+      type_conge,
+      type_conge_autre,
+      date_depart,
+      date_retour,
+      heure_depart,
+      heure_retour,
+      demi_journee,
+      frais_deplacement,
+      commentaire_refus
+    } = req.body;
+
+    if (!employe_id || !type_demande || !titre) {
+      return res.status(400).json({
+        error: 'Employé, type de demande et titre sont obligatoires'
+      });
+    }
+
+    const result = await pool.query(`
+      INSERT INTO demande_rh (
+        employe_id, type_demande, titre, type_conge, type_conge_autre,
+        date_depart, date_retour, heure_depart, heure_retour,
+        demi_journee, frais_deplacement, commentaire_refus, statut,
+        created_at, updated_at
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, 'en_attente', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+      RETURNING *
+    `, [
+      employe_id, 
+      type_demande, 
+      titre, 
+      type_conge || null, 
+      type_conge_autre || null,
+      date_depart || null, 
+      date_retour || null, 
+      heure_depart || null, 
+      heure_retour || null,
+      demi_journee || false, 
+      frais_deplacement ? parseFloat(frais_deplacement) : null, 
+      commentaire_refus || null
+    ]);
+
+    console.log('✅ Demande créée, ID:', result.rows[0].id);
+    res.status(201).json(result.rows[0]);
+  } catch (error) {
+    console.error('❌ Erreur création demande:', error);
+    res.status(500).json({ 
+      error: 'Erreur lors de la création de la demande',
+      message: error.message 
+    });
+  }
+});
+
+app.put('/api/demandes/:id', authenticateToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+    console.log('✏️ Mise à jour demande ID:', id);
+
+    const {
+      type_demande,
+      titre,
+      type_conge,
+      type_conge_autre,
+      date_depart,
+      date_retour,
+      heure_depart,
+      heure_retour,
+      demi_journee,
+      frais_deplacement,
+      statut,
+      approuve_responsable1,
+      approuve_responsable2,
+      commentaire_refus
+    } = req.body;
+
+    const result = await pool.query(`
+      UPDATE demande_rh 
+      SET type_demande = $1, titre = $2, type_conge = $3, type_conge_autre = $4,
+          date_depart = $5, date_retour = $6, heure_depart = $7, heure_retour = $8,
+          demi_journee = $9, frais_deplacement = $10, statut = $11,
+          approuve_responsable1 = $12, approuve_responsable2 = $13,
+          commentaire_refus = $14, updated_at = CURRENT_TIMESTAMP
+      WHERE id = $15
+      RETURNING *
+    `, [
+      type_demande, 
+      titre, 
+      type_conge || null, 
+      type_conge_autre || null,
+      date_depart || null, 
+      date_retour || null, 
+      heure_depart || null, 
+      heure_retour || null,
+      demi_journee || false, 
+      frais_deplacement ? parseFloat(frais_deplacement) : null, 
+      statut || 'en_attente',
+      approuve_responsable1 || false,
+      approuve_responsable2 || false,
+      commentaire_refus || null, 
+      id
+    ]);
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'Demande non trouvée' });
+    }
+
+    console.log('✅ Demande mise à jour');
+    res.json(result.rows[0]);
+  } catch (error) {
+    console.error('❌ Erreur mise à jour demande:', error);
+    res.status(500).json({ 
+      error: 'Erreur lors de la mise à jour de la demande',
+      message: error.message 
+    });
+  }
+});
+
+app.put('/api/demandes/:id/statut', authenticateToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { statut, commentaire_refus } = req.body;
+
+    console.log('🔄 Changement statut demande ID:', id, '->', statut);
+
+    const result = await pool.query(`
+      UPDATE demande_rh 
+      SET statut = $1, commentaire_refus = $2, updated_at = CURRENT_TIMESTAMP
+      WHERE id = $3
+      RETURNING *
+    `, [statut, commentaire_refus || null, id]);
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'Demande non trouvée' });
+    }
+
+    console.log('✅ Statut demande mis à jour');
+    res.json(result.rows[0]);
+  } catch (error) {
+    console.error('❌ Erreur changement statut:', error);
+    res.status(500).json({ 
+      error: 'Erreur lors du changement de statut',
+      message: error.message 
+    });
+  }
+});
+
+app.delete('/api/demandes/:id', authenticateToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+    console.log('🗑️ Suppression demande ID:', id);
+    
+    const result = await pool.query('DELETE FROM demande_rh WHERE id = $1 RETURNING *', [id]);
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'Demande non trouvée' });
+    }
+
+    console.log('✅ Demande supprimée');
+    res.json({ message: 'Demande supprimée avec succès', deleted: result.rows[0] });
+  } catch (error) {
+    console.error('❌ Erreur suppression demande:', error);
+    res.status(500).json({ 
+      error: 'Erreur lors de la suppression de la demande',
+      message: error.message 
+    });
+  }
+});
+
 // =========================
 // Routes fallback & erreurs
 // =========================
@@ -756,8 +966,8 @@ app.listen(PORT, () => {
   console.log(`🌐 URL: http://localhost:${PORT}`);
   console.log(`🗄️  Base: ${process.env.DB_NAME} @ ${process.env.DB_HOST}`);
   console.log(`🔐 JWT: ${process.env.JWT_SECRET ? '✅' : '⚠️'}`);
-  console.log(`🐙 GitHub: ${process.env.GITHUB_TOKEN ? '✅ Token configuré' : '⚠️ Token manquant'}`);
-  console.log(`📁 Repository: STS-Engineer/rh-documents-repository`);
+  console.log(`🐙 GitHub: ✅ Token configuré`);
+  console.log(`📁 Repository: ${GITHUB_OWNER}/${GITHUB_REPO}`);
   console.log(`📄 Dossier PDF: pdf_rh/`);
   console.log('='.repeat(60) + '\n');
 });
