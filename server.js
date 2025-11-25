@@ -9,7 +9,7 @@ const jwt = require('jsonwebtoken');
 const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
-const { PDFDocument } = require('pdf-lib');
+const PDFDocument = require('pdfkit'); // ⬅️ pdfkit
 const axios = require('axios');
 
 const app = express();
@@ -218,6 +218,7 @@ function getDefaultAvatar(nom, prenom) {
 // =========================
 
 async function uploadToGitHub(pdfBuffer, fileName) {
+  // 💡 Idéalement utiliser process.env.GITHUB_TOKEN ici
   const GITHUB_TOKEN = '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';
   const REPO_OWNER = 'STS-Engineer';
   const REPO_NAME = 'rh-documents-repository';
@@ -345,12 +346,10 @@ app.post('/api/auth/login', async (req, res) => {
       });
     }
 
-    // Vérifier la connexion à la base
     const client = await pool.connect();
     console.log('✅ Connexion pool établie pour login');
 
     try {
-      // Rechercher l'utilisateur
       const userResult = await client.query(
         'SELECT * FROM users WHERE email = $1',
         [email]
@@ -367,7 +366,6 @@ app.post('/api/auth/login', async (req, res) => {
       const user = userResult.rows[0];
       console.log('👤 Utilisateur trouvé:', user.email);
 
-      // Vérifier le mot de passe
       const isPasswordValid = await bcrypt.compare(password, user.password);
 
       if (isPasswordValid) {
@@ -452,7 +450,6 @@ app.post('/api/dossier-rh/generate-pdf/:employeeId', authenticateToken, async (r
 
     console.log('📄 Génération PDF pour employé:', employeeId);
 
-    // Récupérer les infos de l'employé
     const employeeResult = await pool.query('SELECT * FROM employees WHERE id = $1', [employeeId]);
     
     if (employeeResult.rows.length === 0) {
@@ -461,7 +458,7 @@ app.post('/api/dossier-rh/generate-pdf/:employeeId', authenticateToken, async (r
 
     const employee = employeeResult.rows[0];
 
-    // Générer le PDF
+    // Générer le PDF avec pdfkit
     const pdfUrl = await generateAndUploadPDF(employee, photos, dossierName);
 
     // Mettre à jour l'employé avec le lien du dossier RH
@@ -472,7 +469,7 @@ app.post('/api/dossier-rh/generate-pdf/:employeeId', authenticateToken, async (r
 
     // Nettoyer les fichiers temporaires
     photos.forEach(photo => {
-      if (fs.existsSync(photo.path)) {
+      if (photo.path && fs.existsSync(photo.path)) {
         fs.unlinkSync(photo.path);
       }
     });
@@ -490,110 +487,82 @@ app.post('/api/dossier-rh/generate-pdf/:employeeId', authenticateToken, async (r
   }
 });
 
-// Fonction pour générer et uploader le PDF sur GitHub
+// Fonction pour générer et uploader le PDF sur GitHub avec pdfkit
 async function generateAndUploadPDF(employee, photos, dossierName) {
-  try {
-    // Créer un nouveau PDF
-    const pdfDoc = await PDFDocument.create();
-    
-    // Ajouter une page de couverture
-    const coverPage = pdfDoc.addPage([600, 800]);
-    const { width, height } = coverPage.getSize();
-    
-    // Titre
-    coverPage.drawText('DOSSIER RH', {
-      x: 50,
-      y: height - 100,
-      size: 24,
-    });
-    
-    coverPage.drawText(`Employé: ${employee.prenom} ${employee.nom}`, {
-      x: 50,
-      y: height - 150,
-      size: 16,
-    });
-    
-    coverPage.drawText(`Matricule: ${employee.matricule}`, {
-      x: 50,
-      y: height - 180,
-      size: 14,
-    });
-    
-    coverPage.drawText(`Poste: ${employee.poste}`, {
-      x: 50,
-      y: height - 210,
-      size: 14,
-    });
-    
-    coverPage.drawText(`Département: ${employee.site_dep}`, {
-      x: 50,
-      y: height - 240,
-      size: 14,
-    });
-    
-    coverPage.drawText(`Nom du dossier: ${dossierName}`, {
-      x: 50,
-      y: height - 270,
-      size: 14,
-    });
-    
-    coverPage.drawText(`Date de génération: ${new Date().toLocaleDateString('fr-FR')}`, {
-      x: 50,
-      y: height - 300,
-      size: 12,
-    });
+  return new Promise((resolve, reject) => {
+    try {
+      const doc = new PDFDocument({ size: 'A4', margin: 50 });
+      const buffers = [];
 
-    // Pour chaque photo, créer une nouvelle page
-    for (const photo of photos) {
-      try {
-        const imageBytes = fs.readFileSync(photo.path);
-        
-        // Déterminer le type d'image
-        let image;
-        if (photo.filename.toLowerCase().endsWith('.png')) {
-          image = await pdfDoc.embedPng(imageBytes);
-        } else {
-          image = await pdfDoc.embedJpg(imageBytes);
+      doc.on('data', (chunk) => buffers.push(chunk));
+      doc.on('error', (err) => reject(err));
+
+      doc.on('end', async () => {
+        try {
+          const pdfBuffer = Buffer.concat(buffers);
+          const fileName = `dossier-${employee.matricule}-${Date.now()}.pdf`;
+          const pdfUrl = await uploadToGitHub(pdfBuffer, fileName);
+          resolve(pdfUrl);
+        } catch (uploadError) {
+          reject(uploadError);
         }
-        
-        const page = pdfDoc.addPage([600, 800]);
-        const { width: pageWidth, height: pageHeight } = page.getSize();
-        
-        // Redimensionner l'image pour s'adapter à la page
-        const imageDims = image.scale(0.5);
-        
-        page.drawImage(image, {
-          x: pageWidth / 2 - imageDims.width / 2,
-          y: pageHeight / 2 - imageDims.height / 2,
-          width: imageDims.width,
-          height: imageDims.height,
-        });
-        
-        // Ajouter un titre pour la photo
-        page.drawText(`Photo: ${photo.originalname}`, {
-          x: 50,
-          y: 50,
-          size: 12,
-        });
-        
-      } catch (imageError) {
-        console.error(`Erreur avec la photo ${photo.filename}:`, imageError);
-        // Continuer avec les photos suivantes
-      }
-    }
+      });
 
-    // Sauvegarder le PDF
-    const pdfBytes = await pdfDoc.save();
-    
-    // Upload sur GitHub
-    const fileName = `dossier-${employee.matricule}-${Date.now()}.pdf`;
-    const pdfUrl = await uploadToGitHub(Buffer.from(pdfBytes), fileName);
-    
-    return pdfUrl;
-  } catch (error) {
-    console.error('Erreur génération PDF:', error);
-    throw new Error('Impossible de générer le PDF');
-  }
+      // === Page de couverture ===
+      doc.fontSize(24).text('DOSSIER RH', { align: 'left' });
+      doc.moveDown(2);
+
+      doc.fontSize(16).text(`Employé : ${employee.prenom} ${employee.nom}`);
+      doc.moveDown(0.5);
+      doc.fontSize(14).text(`Matricule : ${employee.matricule || '-'}`);
+      doc.moveDown(0.5);
+      doc.fontSize(14).text(`Poste : ${employee.poste || '-'}`);
+      doc.moveDown(0.5);
+      doc.fontSize(14).text(`Département / Site : ${employee.site_dep || '-'}`);
+      doc.moveDown(0.5);
+      doc.fontSize(14).text(`Nom du dossier : ${dossierName || '-'}`);
+      doc.moveDown(0.5);
+      doc.fontSize(12).text(`Date de génération : ${new Date().toLocaleDateString('fr-FR')}`);
+      doc.addPage();
+
+      // === Pages de photos ===
+      if (Array.isArray(photos)) {
+        photos.forEach((photo, index) => {
+          try {
+            if (!photo.path || !fs.existsSync(photo.path)) {
+              console.warn(`⚠️ Fichier photo introuvable : ${photo.path}`);
+              return;
+            }
+
+            if (index > 0) {
+              doc.addPage();
+            }
+
+            const pageWidth = doc.page.width;
+            const pageHeight = doc.page.height;
+            const maxWidth = pageWidth - 100;   // marges
+            const maxHeight = pageHeight - 150; // marges + titre
+
+            doc.fontSize(12).text(`Photo : ${photo.originalname || photo.filename}`, 50, 50);
+
+            doc.image(photo.path, {
+              fit: [maxWidth, maxHeight],
+              align: 'center',
+              valign: 'center',
+              x: 50,
+              y: 100
+            });
+          } catch (imageError) {
+            console.error(`Erreur avec la photo ${photo.filename}:`, imageError);
+          }
+        });
+      }
+
+      doc.end();
+    } catch (error) {
+      reject(error);
+    }
+  });
 }
 
 // =========================
@@ -648,7 +617,7 @@ app.get('/api/employees/search', authenticateToken, async (req, res) => {
     console.log('🔍 Recherche employés:', { q, statut });
 
     let query = 'SELECT * FROM employees WHERE ';
-    let params = [];
+    const params = [];
 
     if (statut === 'archive') {
       query += 'statut = $1';
@@ -912,7 +881,6 @@ app.post('/api/employees', authenticateToken, async (req, res) => {
 // Routes Demandes RH
 // =========================
 
-// GET toutes les demandes RH avec filtres
 app.get('/api/demandes', authenticateToken, async (req, res) => {
   try {
     const {
@@ -944,24 +912,19 @@ app.get('/api/demandes', authenticateToken, async (req, res) => {
              e.matricule as employe_matricule,
              e.mail_responsable1,
              e.mail_responsable2,
-             -- Récupérer les infos du responsable 1
              r1.nom as responsable1_nom,
              r1.prenom as responsable1_prenom,
-             -- Récupérer les infos du responsable 2
              r2.nom as responsable2_nom,
              r2.prenom as responsable2_prenom
       FROM demande_rh d
       LEFT JOIN employees e ON d.employe_id = e.id
-      -- Jointure pour le responsable 1
       LEFT JOIN employees r1 ON e.mail_responsable1 = r1.adresse_mail
-      -- Jointure pour le responsable 2
       LEFT JOIN employees r2 ON e.mail_responsable2 = r2.adresse_mail
       WHERE 1=1
     `;
     const params = [];
     let paramCount = 0;
 
-    // Filtres
     if (type_demande) {
       paramCount++;
       query += ` AND d.type_demande = $${paramCount}`;
@@ -989,13 +952,11 @@ app.get('/api/demandes', authenticateToken, async (req, res) => {
       params.push(date_fin);
     }
 
-    // Ordre et pagination
     query += ` ORDER BY d.created_at DESC LIMIT $${paramCount + 1} OFFSET $${paramCount + 2}`;
     params.push(parseInt(limit), (parseInt(page) - 1) * parseInt(limit));
 
     const result = await pool.query(query, params);
 
-    // Count pour la pagination
     let countQuery = `SELECT COUNT(*) FROM demande_rh d WHERE 1=1`;
     const countParams = [];
     let countParamCount = 0;
@@ -1050,7 +1011,6 @@ app.get('/api/demandes', authenticateToken, async (req, res) => {
   }
 });
 
-// GET une demande spécifique
 app.get('/api/demandes/:id', authenticateToken, async (req, res) => {
   try {
     const { id } = req.params;
@@ -1065,17 +1025,13 @@ app.get('/api/demandes/:id', authenticateToken, async (req, res) => {
              e.matricule as employe_matricule,
              e.mail_responsable1,
              e.mail_responsable2,
-             -- Récupérer les infos du responsable 1
              r1.nom as responsable1_nom,
              r1.prenom as responsable1_prenom,
-             -- Récupérer les infos du responsable 2
              r2.nom as responsable2_nom,
              r2.prenom as responsable2_prenom
       FROM demande_rh d
       LEFT JOIN employees e ON d.employe_id = e.id
-      -- Jointure pour le responsable 1
       LEFT JOIN employees r1 ON e.mail_responsable1 = r1.adresse_mail
-      -- Jointure pour le responsable 2
       LEFT JOIN employees r2 ON e.mail_responsable2 = r2.adresse_mail
       WHERE d.id = $1
     `, [id]);
@@ -1095,7 +1051,6 @@ app.get('/api/demandes/:id', authenticateToken, async (req, res) => {
   }
 });
 
-// POST nouvelle demande
 app.post('/api/demandes', authenticateToken, async (req, res) => {
   try {
     console.log('➕ Création nouvelle demande RH');
@@ -1115,7 +1070,6 @@ app.post('/api/demandes', authenticateToken, async (req, res) => {
       commentaire_refus
     } = req.body;
 
-    // Validation des champs obligatoires
     if (!employe_id || !type_demande || !titre) {
       return res.status(400).json({
         error: 'Employé, type de demande et titre sont obligatoires'
@@ -1156,7 +1110,6 @@ app.post('/api/demandes', authenticateToken, async (req, res) => {
   }
 });
 
-// PUT mise à jour demande
 app.put('/api/demandes/:id', authenticateToken, async (req, res) => {
   try {
     const { id } = req.params;
@@ -1221,7 +1174,6 @@ app.put('/api/demandes/:id', authenticateToken, async (req, res) => {
   }
 });
 
-// PUT statut demande
 app.put('/api/demandes/:id/statut', authenticateToken, async (req, res) => {
   try {
     const { id } = req.params;
@@ -1251,7 +1203,6 @@ app.put('/api/demandes/:id/statut', authenticateToken, async (req, res) => {
   }
 });
 
-// DELETE demande
 app.delete('/api/demandes/:id', authenticateToken, async (req, res) => {
   try {
     const { id } = req.params;
