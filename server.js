@@ -214,13 +214,18 @@ function getDefaultAvatar(nom, prenom) {
 // =========================
 
 async function uploadToGitHub(pdfBuffer, fileName) {
-  // ⚠️ En prod, mets ça dans process.env.GITHUB_TOKEN
   const GITHUB_TOKEN = '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';
   const REPO_OWNER = 'STS-Engineer';
   const REPO_NAME = 'rh-documents-repository';
   const BRANCH = 'main';
+  const PDF_FOLDER = 'pdf_rh'; 
 
-  const apiUrl = `https://api.github.com/repos/${REPO_OWNER}/${REPO_NAME}/contents/pdf-rh/${fileName}`;
+  if (!GITHUB_TOKEN) {
+    console.error('❌ GITHUB_TOKEN non défini dans les variables d’environnement');
+    throw new Error('GITHUB_TOKEN non défini sur le serveur');
+  }
+
+  const apiUrl = `https://api.github.com/repos/${REPO_OWNER}/${REPO_NAME}/contents/${PDF_FOLDER}/${fileName}`;
 
   const content = pdfBuffer.toString('base64');
 
@@ -234,16 +239,23 @@ async function uploadToGitHub(pdfBuffer, fileName) {
     const response = await axios.put(apiUrl, data, {
       headers: {
         Authorization: `token ${GITHUB_TOKEN}`,
-        'Content-Type': 'application/json'
+        'Content-Type': 'application/json',
+        'User-Agent': 'rh-backend' // GitHub aime bien avoir un User-Agent
       }
     });
 
     return response.data.content.download_url;
   } catch (error) {
-    console.error('Erreur upload GitHub:', error.response?.data || error.message);
-    throw new Error("Erreur lors de l'upload sur GitHub");
+    console.error('❌ Erreur upload GitHub (détail brut):', error.response?.data || error.message);
+
+    const githubMessage =
+      error.response?.data?.message || error.message || 'Erreur GitHub inconnue';
+
+    // On remonte le message GitHub au front dans "details"
+    throw new Error(`GitHub: ${githubMessage}`);
   }
 }
+
 
 // =========================
 // ROUTES RH
