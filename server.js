@@ -214,7 +214,7 @@ function getDefaultAvatar(nom, prenom) {
 // =========================
 
 async function uploadToGitHub(pdfBuffer, fileName) {
-  const GITHUB_TOKEN = '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';
+  const GITHUB_TOKEN = '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';
   const REPO_OWNER = 'STS-Engineer';
   const REPO_NAME = 'rh-documents-repository';
   const BRANCH = 'main';
