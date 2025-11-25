@@ -451,7 +451,7 @@ async function generateAndUploadPDF(employee, photos, dossierName) {
 
 async function uploadToGitHub(pdfBuffer, fileName) {
   
-  const GITHUB_TOKEN = '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';
+  const GITHUB_TOKEN = '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';
   
   const REPO_OWNER = 'STS-Engineer';
   const REPO_NAME = 'rh-documents-repository';
