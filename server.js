@@ -26,7 +26,7 @@ const dbConfig = {
   password: process.env.DB_PASSWORD,
   port: Number(process.env.DB_PORT || 5432),
   ssl: { require: true, rejectUnauthorized: false },
-  connectionTimeoutMillis: 10000, // 10 secondes
+  connectionTimeoutMillis: 10000,
   idleTimeoutMillis: 30000
 };
 
@@ -55,7 +55,7 @@ console.log('🔧 Variables d\'environnement:', {
   NODE_ENV: process.env.NODE_ENV || 'development'
 });
 
-// Vérification et définition de JWT_SECRET
+// JWT secret
 const JWT_SECRET =
   process.env.JWT_SECRET || 'fallback_secret_pour_development_seulement_2024';
 
@@ -69,7 +69,6 @@ if (!process.env.JWT_SECRET) {
 // Middleware globaux
 // =========================
 
-// Gestion CORS (local + Azure)
 const allowedOrigins = [
   'http://localhost:3000',
   'https://avo-hr-managment.azurewebsites.net'
@@ -81,9 +80,7 @@ if (process.env.FRONTEND_URL && !allowedOrigins.includes(process.env.FRONTEND_UR
 
 const corsOptions = {
   origin(origin, callback) {
-    // Autoriser les outils sans header Origin (Postman, curl…)
     if (!origin) return callback(null, true);
-
     if (allowedOrigins.includes(origin)) {
       return callback(null, true);
     } else {
@@ -100,24 +97,25 @@ app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
 // =========================
-// Configuration Multer pour upload
+// Configuration Multer upload
 // =========================
+
+const uploadTempDir = path.join(__dirname, 'uploads', 'temp');
 
 const storage = multer.diskStorage({
   destination: function (req, file, cb) {
-    const uploadDir = './uploads/temp';
-    if (!fs.existsSync(uploadDir)) {
-      fs.mkdirSync(uploadDir, { recursive: true });
+    if (!fs.existsSync(uploadTempDir)) {
+      fs.mkdirSync(uploadTempDir, { recursive: true });
     }
-    cb(null, uploadDir);
+    cb(null, uploadTempDir);
   },
   filename: function (req, file, cb) {
-    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
+    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1e9);
     cb(null, 'photo-' + uniqueSuffix + path.extname(file.originalname));
   }
 });
 
-const upload = multer({ 
+const upload = multer({
   storage: storage,
   limits: {
     fileSize: 10 * 1024 * 1024 // 10MB max
@@ -137,15 +135,15 @@ const upload = multer({
 
 pool
   .connect()
-  .then((client) => {
+  .then(client => {
     console.log('✅ Connexion à PostgreSQL réussie pour RH Application');
     return client.query('SELECT version(), current_database()');
   })
-  .then((result) => {
+  .then(result => {
     console.log('📊 Base de données:', result.rows[0]);
     pool.query('SELECT 1').then(() => console.log('✅ Pool PostgreSQL opérationnel'));
   })
-  .catch((err) => {
+  .catch(err => {
     console.error('❌ ERREUR DE CONNEXION PostgreSQL:', {
       message: err.message,
       code: err.code,
@@ -155,8 +153,7 @@ pool
     });
   });
 
-// Gestion des erreurs de pool
-pool.on('error', (err) => {
+pool.on('error', err => {
   console.error('❌ Erreur inattendue du pool PostgreSQL:', err);
 });
 
@@ -182,7 +179,7 @@ const authenticateToken = (req, res, next) => {
 };
 
 // =========================
-// Fonctions utilitaires
+// Utilitaires
 // =========================
 
 function isValidUrl(string) {
@@ -209,25 +206,24 @@ function getDefaultAvatar(nom, prenom) {
     '85C1E9'
   ];
   const color = colors[Math.floor(Math.random() * colors.length)];
-
   return `https://ui-avatars.com/api/?name=${initiales}&background=${color}&color=fff&size=150`;
 }
 
 // =========================
-// Fonctions pour GitHub
+// GitHub upload
 // =========================
 
 async function uploadToGitHub(pdfBuffer, fileName) {
-  // 💡 Idéalement utiliser process.env.GITHUB_TOKEN ici
+  // ⚠️ En prod, idéalement GITHUB_TOKEN devrait venir de process.env
   const GITHUB_TOKEN = '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';
   const REPO_OWNER = 'STS-Engineer';
   const REPO_NAME = 'rh-documents-repository';
   const BRANCH = 'main';
-  
+
   const apiUrl = `https://api.github.com/repos/${REPO_OWNER}/${REPO_NAME}/contents/pdf-rh/${fileName}`;
-  
+
   const content = pdfBuffer.toString('base64');
-  
+
   const data = {
     message: `Ajout du dossier RH: ${fileName}`,
     content: content,
@@ -237,7 +233,7 @@ async function uploadToGitHub(pdfBuffer, fileName) {
   try {
     const response = await axios.put(apiUrl, data, {
       headers: {
-        'Authorization': `token ${GITHUB_TOKEN}`,
+        Authorization: `token ${GITHUB_TOKEN}`,
         'Content-Type': 'application/json'
       }
     });
@@ -245,7 +241,7 @@ async function uploadToGitHub(pdfBuffer, fileName) {
     return response.data.content.download_url;
   } catch (error) {
     console.error('Erreur upload GitHub:', error.response?.data || error.message);
-    throw new Error('Erreur lors de l\'upload sur GitHub');
+    throw new Error("Erreur lors de l'upload sur GitHub");
   }
 }
 
@@ -281,17 +277,17 @@ app.get('/', (req, res) => {
   });
 });
 
-// Route de santé
+// Health check
 app.get('/api/health', async (req, res) => {
   try {
     console.log('🏥 Health check - Tentative de connexion à la base...');
-    
+
     const client = await pool.connect();
     console.log('✅ Client connecté');
-    
+
     const result = await client.query('SELECT version(), current_database()');
     client.release();
-    
+
     console.log('✅ Requête exécutée avec succès');
 
     res.json({
@@ -314,7 +310,7 @@ app.get('/api/health', async (req, res) => {
       code: error.code,
       stack: error.stack
     });
-    
+
     res.status(500).json({
       status: 'Error',
       message: 'Erreur base de données',
@@ -417,51 +413,75 @@ app.post('/api/auth/login', async (req, res) => {
 // Routes Dossier RH
 // =========================
 
-// Route pour uploader des photos temporaires
-app.post('/api/dossier-rh/upload-photos', authenticateToken, upload.array('photos', 10), async (req, res) => {
-  try {
-    if (!req.files || req.files.length === 0) {
-      return res.status(400).json({ error: 'Aucune photo uploadée' });
+// Upload des photos temporaires
+app.post(
+  '/api/dossier-rh/upload-photos',
+  authenticateToken,
+  upload.array('photos', 10),
+  async (req, res) => {
+    try {
+      if (!req.files || req.files.length === 0) {
+        return res.status(400).json({ error: 'Aucune photo uploadée' });
+      }
+
+      // On ne renvoie PAS le path serveur au front
+      const photoInfos = req.files.map(file => ({
+        filename: file.filename,
+        originalname: file.originalname,
+        size: file.size
+      }));
+
+      res.json({
+        success: true,
+        photos: photoInfos,
+        message: `${req.files.length} photo(s) uploadée(s) avec succès`
+      });
+    } catch (error) {
+      console.error('❌ Erreur upload photos:', error);
+      res.status(500).json({
+        error: "Erreur lors de l'upload des photos",
+        details: error.message
+      });
     }
-
-    const photoUrls = req.files.map(file => ({
-      filename: file.filename,
-      path: file.path,
-      originalname: file.originalname,
-      size: file.size
-    }));
-
-    res.json({
-      success: true,
-      photos: photoUrls,
-      message: `${req.files.length} photo(s) uploadée(s) avec succès`
-    });
-  } catch (error) {
-    console.error('❌ Erreur upload photos:', error);
-    res.status(500).json({ error: 'Erreur lors de l\'upload des photos' });
   }
-});
+);
 
-// Route pour générer le PDF et le stocker sur GitHub
+// Générer le PDF et le stocker sur GitHub
 app.post('/api/dossier-rh/generate-pdf/:employeeId', authenticateToken, async (req, res) => {
   try {
     const { employeeId } = req.params;
-    const { photos, dossierName } = req.body;
+    const { photos: clientPhotos, dossierName } = req.body;
 
-    console.log('📄 Génération PDF pour employé:', employeeId);
+    console.log('📄 Génération PDF pour employé:', employeeId, 'dossier:', dossierName);
 
-    const employeeResult = await pool.query('SELECT * FROM employees WHERE id = $1', [employeeId]);
-    
+    if (!dossierName || !dossierName.trim()) {
+      return res.status(400).json({ error: 'Nom de dossier manquant' });
+    }
+
+    if (!Array.isArray(clientPhotos) || clientPhotos.length === 0) {
+      return res.status(400).json({ error: 'Aucune photo fournie pour le dossier' });
+    }
+
+    const employeeResult = await pool.query('SELECT * FROM employees WHERE id = $1', [
+      employeeId
+    ]);
+
     if (employeeResult.rows.length === 0) {
       return res.status(404).json({ error: 'Employé non trouvé' });
     }
 
     const employee = employeeResult.rows[0];
 
-    // Générer le PDF avec pdfkit
+    // On reconstruit les chemins fichiers côté serveur à partir de filename
+    const photos = clientPhotos.map(p => ({
+      ...p,
+      path: path.join(uploadTempDir, p.filename)
+    }));
+
+    console.log('📸 Photos pour PDF:', photos);
+
     const pdfUrl = await generateAndUploadPDF(employee, photos, dossierName);
 
-    // Mettre à jour l'employé avec le lien du dossier RH
     const updateResult = await pool.query(
       'UPDATE employees SET dossier_rh = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2 RETURNING *',
       [pdfUrl, employeeId]
@@ -469,8 +489,17 @@ app.post('/api/dossier-rh/generate-pdf/:employeeId', authenticateToken, async (r
 
     // Nettoyer les fichiers temporaires
     photos.forEach(photo => {
-      if (photo.path && fs.existsSync(photo.path)) {
-        fs.unlinkSync(photo.path);
+      try {
+        if (photo.path && fs.existsSync(photo.path)) {
+          fs.unlinkSync(photo.path);
+          console.log('🧹 Fichier temporaire supprimé:', photo.path);
+        }
+      } catch (cleanupErr) {
+        console.warn(
+          '⚠️ Erreur suppression fichier temporaire:',
+          photo.path,
+          cleanupErr.message
+        );
       }
     });
 
@@ -480,35 +509,47 @@ app.post('/api/dossier-rh/generate-pdf/:employeeId', authenticateToken, async (r
       pdfUrl: pdfUrl,
       employee: updateResult.rows[0]
     });
-
   } catch (error) {
-    console.error('❌ Erreur génération PDF:', error);
-    res.status(500).json({ error: 'Erreur lors de la génération du PDF: ' + error.message });
+    console.error('❌ Erreur génération PDF (route):', {
+      message: error.message,
+      stack: error.stack
+    });
+    res.status(500).json({
+      error: 'Erreur lors de la génération du PDF',
+      details: error.message
+    });
   }
 });
 
-// Fonction pour générer et uploader le PDF sur GitHub avec pdfkit
+// Génération + upload PDF (pdfkit)
 async function generateAndUploadPDF(employee, photos, dossierName) {
   return new Promise((resolve, reject) => {
     try {
+      console.log('🧾 Début génération PDF avec pdfkit...');
       const doc = new PDFDocument({ size: 'A4', margin: 50 });
       const buffers = [];
 
-      doc.on('data', (chunk) => buffers.push(chunk));
-      doc.on('error', (err) => reject(err));
+      doc.on('data', chunk => buffers.push(chunk));
+      doc.on('error', err => {
+        console.error('❌ Erreur PDFKit:', err);
+        reject(err);
+      });
 
       doc.on('end', async () => {
         try {
           const pdfBuffer = Buffer.concat(buffers);
-          const fileName = `dossier-${employee.matricule}-${Date.now()}.pdf`;
+          const fileName = `dossier-${employee.matricule || 'EMP'}-${Date.now()}.pdf`;
+          console.log('⬆️ Upload sur GitHub du fichier:', fileName);
           const pdfUrl = await uploadToGitHub(pdfBuffer, fileName);
+          console.log('✅ PDF uploadé sur GitHub:', pdfUrl);
           resolve(pdfUrl);
         } catch (uploadError) {
+          console.error('❌ Erreur upload GitHub dans generateAndUploadPDF:', uploadError);
           reject(uploadError);
         }
       });
 
-      // === Page de couverture ===
+      // Page de couverture
       doc.fontSize(24).text('DOSSIER RH', { align: 'left' });
       doc.moveDown(2);
 
@@ -522,15 +563,22 @@ async function generateAndUploadPDF(employee, photos, dossierName) {
       doc.moveDown(0.5);
       doc.fontSize(14).text(`Nom du dossier : ${dossierName || '-'}`);
       doc.moveDown(0.5);
-      doc.fontSize(12).text(`Date de génération : ${new Date().toLocaleDateString('fr-FR')}`);
+      doc
+        .fontSize(12)
+        .text(`Date de génération : ${new Date().toLocaleDateString('fr-FR')}`);
       doc.addPage();
 
-      // === Pages de photos ===
+      // Pages des photos
       if (Array.isArray(photos)) {
         photos.forEach((photo, index) => {
           try {
-            if (!photo.path || !fs.existsSync(photo.path)) {
-              console.warn(`⚠️ Fichier photo introuvable : ${photo.path}`);
+            if (!photo.path) {
+              console.warn('⚠️ Photo sans path côté serveur:', photo);
+              return;
+            }
+
+            if (!fs.existsSync(photo.path)) {
+              console.warn('⚠️ Fichier photo introuvable sur le disque:', photo.path);
               return;
             }
 
@@ -540,10 +588,12 @@ async function generateAndUploadPDF(employee, photos, dossierName) {
 
             const pageWidth = doc.page.width;
             const pageHeight = doc.page.height;
-            const maxWidth = pageWidth - 100;   // marges
-            const maxHeight = pageHeight - 150; // marges + titre
+            const maxWidth = pageWidth - 100;
+            const maxHeight = pageHeight - 150;
 
-            doc.fontSize(12).text(`Photo : ${photo.originalname || photo.filename}`, 50, 50);
+            doc
+              .fontSize(12)
+              .text(`Photo : ${photo.originalname || photo.filename}`, 50, 50);
 
             doc.image(photo.path, {
               fit: [maxWidth, maxHeight],
@@ -552,14 +602,22 @@ async function generateAndUploadPDF(employee, photos, dossierName) {
               x: 50,
               y: 100
             });
+
+            console.log('📄 Photo ajoutée au PDF:', photo.path);
           } catch (imageError) {
-            console.error(`Erreur avec la photo ${photo.filename}:`, imageError);
+            console.error(
+              `❌ Erreur avec la photo ${photo.filename}:`,
+              imageError.message
+            );
           }
         });
+      } else {
+        console.warn('⚠️ Aucun tableau de photos fourni à generateAndUploadPDF');
       }
 
       doc.end();
     } catch (error) {
+      console.error('❌ Erreur générale generateAndUploadPDF:', error);
       reject(error);
     }
   });
@@ -1004,9 +1062,9 @@ app.get('/api/demandes', authenticateToken, async (req, res) => {
     });
   } catch (error) {
     console.error('❌ Erreur récupération demandes:', error);
-    res.status(500).json({ 
+    res.status(500).json({
       error: 'Erreur lors de la récupération des demandes',
-      message: error.message 
+      message: error.message
     });
   }
 });
@@ -1015,8 +1073,9 @@ app.get('/api/demandes/:id', authenticateToken, async (req, res) => {
   try {
     const { id } = req.params;
     console.log('📄 Récupération demande ID:', id);
-    
-    const result = await pool.query(`
+
+    const result = await pool.query(
+      `
       SELECT d.*, 
              e.nom as employe_nom, 
              e.prenom as employe_prenom,
@@ -1034,7 +1093,9 @@ app.get('/api/demandes/:id', authenticateToken, async (req, res) => {
       LEFT JOIN employees r1 ON e.mail_responsable1 = r1.adresse_mail
       LEFT JOIN employees r2 ON e.mail_responsable2 = r2.adresse_mail
       WHERE d.id = $1
-    `, [id]);
+    `,
+      [id]
+    );
 
     if (result.rows.length === 0) {
       return res.status(404).json({ error: 'Demande non trouvée' });
@@ -1044,9 +1105,9 @@ app.get('/api/demandes/:id', authenticateToken, async (req, res) => {
     res.json(result.rows[0]);
   } catch (error) {
     console.error('❌ Erreur récupération demande:', error);
-    res.status(500).json({ 
+    res.status(500).json({
       error: 'Erreur lors de la récupération de la demande',
-      message: error.message 
+      message: error.message
     });
   }
 });
@@ -1076,7 +1137,8 @@ app.post('/api/demandes', authenticateToken, async (req, res) => {
       });
     }
 
-    const result = await pool.query(`
+    const result = await pool.query(
+      `
       INSERT INTO demande_rh (
         employe_id, type_demande, titre, type_conge, type_conge_autre,
         date_depart, date_retour, heure_depart, heure_retour,
@@ -1084,28 +1146,30 @@ app.post('/api/demandes', authenticateToken, async (req, res) => {
         created_at, updated_at
       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, 'en_attente', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
       RETURNING *
-    `, [
-      employe_id, 
-      type_demande, 
-      titre, 
-      type_conge || null, 
-      type_conge_autre || null,
-      date_depart || null, 
-      date_retour || null, 
-      heure_depart || null, 
-      heure_retour || null,
-      demi_journee || false, 
-      frais_deplacement ? parseFloat(frais_deplacement) : null, 
-      commentaire_refus || null
-    ]);
+    `,
+      [
+        employe_id,
+        type_demande,
+        titre,
+        type_conge || null,
+        type_conge_autre || null,
+        date_depart || null,
+        date_retour || null,
+        heure_depart || null,
+        heure_retour || null,
+        demi_journee || false,
+        frais_deplacement ? parseFloat(frais_deplacement) : null,
+        commentaire_refus || null
+      ]
+    );
 
     console.log('✅ Demande créée, ID:', result.rows[0].id);
     res.status(201).json(result.rows[0]);
   } catch (error) {
     console.error('❌ Erreur création demande:', error);
-    res.status(500).json({ 
+    res.status(500).json({
       error: 'Erreur lors de la création de la demande',
-      message: error.message 
+      message: error.message
     });
   }
 });
@@ -1132,7 +1196,8 @@ app.put('/api/demandes/:id', authenticateToken, async (req, res) => {
       commentaire_refus
     } = req.body;
 
-    const result = await pool.query(`
+    const result = await pool.query(
+      `
       UPDATE demande_rh 
       SET type_demande = $1, titre = $2, type_conge = $3, type_conge_autre = $4,
           date_depart = $5, date_retour = $6, heure_depart = $7, heure_retour = $8,
@@ -1141,23 +1206,25 @@ app.put('/api/demandes/:id', authenticateToken, async (req, res) => {
           commentaire_refus = $14, updated_at = CURRENT_TIMESTAMP
       WHERE id = $15
       RETURNING *
-    `, [
-      type_demande, 
-      titre, 
-      type_conge || null, 
-      type_conge_autre || null,
-      date_depart || null, 
-      date_retour || null, 
-      heure_depart || null, 
-      heure_retour || null,
-      demi_journee || false, 
-      frais_deplacement ? parseFloat(frais_deplacement) : null, 
-      statut || 'en_attente',
-      approuve_responsable1 || false,
-      approuve_responsable2 || false,
-      commentaire_refus || null, 
-      id
-    ]);
+    `,
+      [
+        type_demande,
+        titre,
+        type_conge || null,
+        type_conge_autre || null,
+        date_depart || null,
+        date_retour || null,
+        heure_depart || null,
+        heure_retour || null,
+        demi_journee || false,
+        frais_deplacement ? parseFloat(frais_deplacement) : null,
+        statut || 'en_attente',
+        approuve_responsable1 || false,
+        approuve_responsable2 || false,
+        commentaire_refus || null,
+        id
+      ]
+    );
 
     if (result.rows.length === 0) {
       return res.status(404).json({ error: 'Demande non trouvée' });
@@ -1167,9 +1234,9 @@ app.put('/api/demandes/:id', authenticateToken, async (req, res) => {
     res.json(result.rows[0]);
   } catch (error) {
     console.error('❌ Erreur mise à jour demande:', error);
-    res.status(500).json({ 
+    res.status(500).json({
       error: 'Erreur lors de la mise à jour de la demande',
-      message: error.message 
+      message: error.message
     });
   }
 });
@@ -1181,12 +1248,15 @@ app.put('/api/demandes/:id/statut', authenticateToken, async (req, res) => {
 
     console.log('🔄 Changement statut demande ID:', id, '->', statut);
 
-    const result = await pool.query(`
+    const result = await pool.query(
+      `
       UPDATE demande_rh 
       SET statut = $1, commentaire_refus = $2, updated_at = CURRENT_TIMESTAMP
       WHERE id = $3
       RETURNING *
-    `, [statut, commentaire_refus || null, id]);
+    `,
+      [statut, commentaire_refus || null, id]
+    );
 
     if (result.rows.length === 0) {
       return res.status(404).json({ error: 'Demande non trouvée' });
@@ -1196,9 +1266,9 @@ app.put('/api/demandes/:id/statut', authenticateToken, async (req, res) => {
     res.json(result.rows[0]);
   } catch (error) {
     console.error('❌ Erreur changement statut:', error);
-    res.status(500).json({ 
+    res.status(500).json({
       error: 'Erreur lors du changement de statut',
-      message: error.message 
+      message: error.message
     });
   }
 });
@@ -1207,26 +1277,32 @@ app.delete('/api/demandes/:id', authenticateToken, async (req, res) => {
   try {
     const { id } = req.params;
     console.log('🗑️ Suppression demande ID:', id);
-    
-    const result = await pool.query('DELETE FROM demande_rh WHERE id = $1 RETURNING *', [id]);
+
+    const result = await pool.query(
+      'DELETE FROM demande_rh WHERE id = $1 RETURNING *',
+      [id]
+    );
 
     if (result.rows.length === 0) {
       return res.status(404).json({ error: 'Demande non trouvée' });
     }
 
     console.log('✅ Demande supprimée');
-    res.json({ message: 'Demande supprimée avec succès', deleted: result.rows[0] });
+    res.json({
+      message: 'Demande supprimée avec succès',
+      deleted: result.rows[0]
+    });
   } catch (error) {
     console.error('❌ Erreur suppression demande:', error);
-    res.status(500).json({ 
+    res.status(500).json({
       error: 'Erreur lors de la suppression de la demande',
-      message: error.message 
+      message: error.message
     });
   }
 });
 
 // =========================
-// Routes fallback & erreurs
+// Fallback & erreurs
 // =========================
 
 app.use('*', (req, res) => {
@@ -1245,7 +1321,7 @@ app.use((err, req, res, next) => {
 });
 
 // =========================
-// DÉMARRAGE DU SERVEUR
+// Démarrage serveur
 // =========================
 
 app.listen(PORT, () => {
