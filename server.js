@@ -45,14 +45,15 @@ const pool = new Pool(dbConfig);
 // Logs de configuration
 // =========================
 
-console.log('🔧 Variables d\'environnement:', {
+console.log("🔧 Variables d'environnement:", {
   DB_USER: process.env.DB_USER || '❌ Manquant',
   DB_HOST: process.env.DB_HOST || '❌ Manquant',
   DB_NAME: process.env.DB_NAME || '❌ Manquant',
   DB_PORT: process.env.DB_PORT || '5432 (défaut)',
   JWT_SECRET: process.env.JWT_SECRET ? '✅ Défini' : '❌ Manquant',
   FRONTEND_URL: process.env.FRONTEND_URL || '❌ Non défini',
-  NODE_ENV: process.env.NODE_ENV || 'development'
+  NODE_ENV: process.env.NODE_ENV || 'development',
+  GITHUB_TOKEN: process.env.GITHUB_TOKEN ? '✅ Défini' : '❌ Manquant'
 });
 
 // JWT secret
@@ -61,7 +62,7 @@ const JWT_SECRET =
 
 if (!process.env.JWT_SECRET) {
   console.warn(
-    '⚠️  JWT_SECRET non défini dans .env - utilisation d\'un secret de développement'
+    "⚠️  JWT_SECRET non défini dans .env - utilisation d'un secret de développement"
   );
 }
 
@@ -179,7 +180,7 @@ const authenticateToken = (req, res, next) => {
 };
 
 // =========================
-// Utilitaires
+– Utilitaires
 // =========================
 
 function isValidUrl(string) {
@@ -208,8 +209,9 @@ function getDefaultAvatar(nom, prenom) {
   const color = colors[Math.floor(Math.random() * colors.length)];
   return `https://ui-avatars.com/api/?name=${initiales}&background=${color}&color=fff&size=150`;
 }
+
 // =========================
-// Routes Dossier RH (PLACEZ CES ROUTES AVANT LES AUTRES)
+// Routes Dossier RH (à placer avant le reste des routes spécifiques si besoin)
 // =========================
 
 // Upload des photos temporaires
@@ -224,7 +226,7 @@ app.post(
   async (req, res) => {
     try {
       console.log('📸 Upload photos - Files reçus:', req.files?.length || 0);
-      
+
       if (!req.files || req.files.length === 0) {
         console.log('❌ Aucun fichier reçu');
         return res.status(400).json({ error: 'Aucune photo uploadée' });
@@ -344,7 +346,7 @@ app.post(
   }
 );
 
-// Génération + upload PDF (pdfkit)
+// Génération + upload PDF (pdfkit) – unique définition
 async function generateAndUploadPDF(employee, photos, dossierName) {
   return new Promise((resolve, reject) => {
     try {
@@ -445,18 +447,18 @@ async function generateAndUploadPDF(employee, photos, dossierName) {
     }
   });
 }
+
 // =========================
 // GitHub upload
 // =========================
 
 async function uploadToGitHub(pdfBuffer, fileName) {
-  
-  const GITHUB_TOKEN = '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';
-  
+  const GITHUB_TOKEN = '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'; // ⚠️ À définir dans .env
+
   const REPO_OWNER = 'STS-Engineer';
   const REPO_NAME = 'rh-documents-repository';
   const BRANCH = 'main';
-  const PDF_FOLDER = 'pdf_rh'; 
+  const PDF_FOLDER = 'pdf_rh';
 
   if (!GITHUB_TOKEN) {
     console.error('❌ GITHUB_TOKEN non défini dans les variables d’environnement');
@@ -464,7 +466,6 @@ async function uploadToGitHub(pdfBuffer, fileName) {
   }
 
   const apiUrl = `https://api.github.com/repos/${REPO_OWNER}/${REPO_NAME}/contents/${PDF_FOLDER}/${fileName}`;
-
   const content = pdfBuffer.toString('base64');
 
   const data = {
@@ -476,24 +477,25 @@ async function uploadToGitHub(pdfBuffer, fileName) {
   try {
     const response = await axios.put(apiUrl, data, {
       headers: {
-        Authorization: `token ${GITHUB_TOKEN}`,
+        Authorization: `Bearer ${GITHUB_TOKEN}`, // recommandé pour les fine-grained PAT
         'Content-Type': 'application/json',
-        'User-Agent': 'rh-backend' // GitHub aime bien avoir un User-Agent
+        'User-Agent': 'rh-backend'
       }
     });
 
     return response.data.content.download_url;
   } catch (error) {
-    console.error('❌ Erreur upload GitHub (détail brut):', error.response?.data || error.message);
+    console.error(
+      '❌ Erreur upload GitHub (détail brut):',
+      error.response?.data || error.message
+    );
 
     const githubMessage =
       error.response?.data?.message || error.message || 'Erreur GitHub inconnue';
 
-    // On remonte le message GitHub au front dans "details"
     throw new Error(`GitHub: ${githubMessage}`);
   }
 }
-
 
 // =========================
 // ROUTES RH
@@ -658,217 +660,6 @@ app.post('/api/auth/login', async (req, res) => {
     });
   }
 });
-
-// =========================
-// Routes Dossier RH
-// =========================
-
-// Upload des photos temporaires
-app.post(
-  '/api/dossier-rh/upload-photos',
-  authenticateToken,
-  upload.array('photos', 10),
-  async (req, res) => {
-    try {
-      if (!req.files || req.files.length === 0) {
-        return res.status(400).json({ error: 'Aucune photo uploadée' });
-      }
-
-      const photoInfos = req.files.map(file => ({
-        filename: file.filename,
-        originalname: file.originalname,
-        size: file.size
-      }));
-
-      res.json({
-        success: true,
-        photos: photoInfos,
-        message: `${req.files.length} photo(s) uploadée(s) avec succès`
-      });
-    } catch (error) {
-      console.error('❌ Erreur upload photos:', error);
-      res.status(500).json({
-        error: "Erreur lors de l'upload des photos",
-        details: error.message
-      });
-    }
-  }
-);
-
-// Générer le PDF et le stocker sur GitHub
-app.post('/api/dossier-rh/generate-pdf/:employeeId', authenticateToken, async (req, res) => {
-  try {
-    const { employeeId } = req.params;
-    const { photos: clientPhotos, dossierName } = req.body;
-
-    console.log('📄 Génération PDF pour employé:', employeeId, 'dossier:', dossierName);
-
-    if (!dossierName || !dossierName.trim()) {
-      return res.status(400).json({ error: 'Nom de dossier manquant' });
-    }
-
-    if (!Array.isArray(clientPhotos) || clientPhotos.length === 0) {
-      return res.status(400).json({ error: 'Aucune photo fournie pour le dossier' });
-    }
-
-    const employeeResult = await pool.query('SELECT * FROM employees WHERE id = $1', [
-      employeeId
-    ]);
-
-    if (employeeResult.rows.length === 0) {
-      return res.status(404).json({ error: 'Employé non trouvé' });
-    }
-
-    const employee = employeeResult.rows[0];
-
-    const photos = clientPhotos.map(p => ({
-      ...p,
-      path: path.join(uploadTempDir, p.filename)
-    }));
-
-    console.log('📸 Photos pour PDF:', photos);
-
-    const pdfUrl = await generateAndUploadPDF(employee, photos, dossierName);
-
-    const updateResult = await pool.query(
-      'UPDATE employees SET dossier_rh = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2 RETURNING *',
-      [pdfUrl, employeeId]
-    );
-
-    photos.forEach(photo => {
-      try {
-        if (photo.path && fs.existsSync(photo.path)) {
-          fs.unlinkSync(photo.path);
-          console.log('🧹 Fichier temporaire supprimé:', photo.path);
-        }
-      } catch (cleanupErr) {
-        console.warn(
-          '⚠️ Erreur suppression fichier temporaire:',
-          photo.path,
-          cleanupErr.message
-        );
-      }
-    });
-
-    res.json({
-      success: true,
-      message: 'Dossier RH généré avec succès',
-      pdfUrl: pdfUrl,
-      employee: updateResult.rows[0]
-    });
-  } catch (error) {
-    console.error('❌ Erreur génération PDF (route):', {
-      message: error.message,
-      stack: error.stack
-    });
-    res.status(500).json({
-      error: 'Erreur lors de la génération du PDF',
-      details: error.message
-    });
-  }
-});
-
-// Génération + upload PDF (pdfkit)
-async function generateAndUploadPDF(employee, photos, dossierName) {
-  return new Promise((resolve, reject) => {
-    try {
-      console.log('🧾 Début génération PDF avec pdfkit...');
-      const doc = new PDFDocument({ size: 'A4', margin: 50 });
-      const buffers = [];
-
-      doc.on('data', chunk => buffers.push(chunk));
-      doc.on('error', err => {
-        console.error('❌ Erreur PDFKit:', err);
-        reject(err);
-      });
-
-      doc.on('end', async () => {
-        try {
-          const pdfBuffer = Buffer.concat(buffers);
-          const fileName = `dossier-${employee.matricule || 'EMP'}-${Date.now()}.pdf`;
-          console.log('⬆️ Upload sur GitHub du fichier:', fileName);
-          const pdfUrl = await uploadToGitHub(pdfBuffer, fileName);
-          console.log('✅ PDF uploadé sur GitHub:', pdfUrl);
-          resolve(pdfUrl);
-        } catch (uploadError) {
-          console.error('❌ Erreur upload GitHub dans generateAndUploadPDF:', uploadError);
-          reject(uploadError);
-        }
-      });
-
-      // Page de couverture
-      doc.fontSize(24).text('DOSSIER RH', { align: 'left' });
-      doc.moveDown(2);
-
-      doc.fontSize(16).text(`Employé : ${employee.prenom} ${employee.nom}`);
-      doc.moveDown(0.5);
-      doc.fontSize(14).text(`Matricule : ${employee.matricule || '-'}`);
-      doc.moveDown(0.5);
-      doc.fontSize(14).text(`Poste : ${employee.poste || '-'}`);
-      doc.moveDown(0.5);
-      doc.fontSize(14).text(`Département / Site : ${employee.site_dep || '-'}`);
-      doc.moveDown(0.5);
-      doc.fontSize(14).text(`Nom du dossier : ${dossierName || '-'}`);
-      doc.moveDown(0.5);
-      doc
-        .fontSize(12)
-        .text(`Date de génération : ${new Date().toLocaleDateString('fr-FR')}`);
-      doc.addPage();
-
-      // Pages des photos
-      if (Array.isArray(photos)) {
-        photos.forEach((photo, index) => {
-          try {
-            if (!photo.path) {
-              console.warn('⚠️ Photo sans path côté serveur:', photo);
-              return;
-            }
-
-            if (!fs.existsSync(photo.path)) {
-              console.warn('⚠️ Fichier photo introuvable sur le disque:', photo.path);
-              return;
-            }
-
-            if (index > 0) {
-              doc.addPage();
-            }
-
-            const pageWidth = doc.page.width;
-            const pageHeight = doc.page.height;
-            const maxWidth = pageWidth - 100;
-            const maxHeight = pageHeight - 150;
-
-            doc
-              .fontSize(12)
-              .text(`Photo : ${photo.originalname || photo.filename}`, 50, 50);
-
-            doc.image(photo.path, {
-              fit: [maxWidth, maxHeight],
-              align: 'center',
-              valign: 'center',
-              x: 50,
-              y: 100
-            });
-
-            console.log('📄 Photo ajoutée au PDF:', photo.path);
-          } catch (imageError) {
-            console.error(
-              `❌ Erreur avec la photo ${photo.filename}:`,
-              imageError.message
-            );
-          }
-        });
-      } else {
-        console.warn('⚠️ Aucun tableau de photos fourni à generateAndUploadPDF');
-      }
-
-      doc.end();
-    } catch (error) {
-      console.error('❌ Erreur générale generateAndUploadPDF:', error);
-      reject(error);
-    }
-  });
-}
 
 // =========================
 // Routes Employés
