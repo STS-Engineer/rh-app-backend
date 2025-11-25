@@ -1,4 +1,4 @@
-// server.js 
+// server.js
 require('dotenv').config({ path: __dirname + '/.env' });
 
 const express = require('express');
@@ -9,7 +9,7 @@ const jwt = require('jsonwebtoken');
 const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
-const PDFDocument = require('pdfkit'); // ⬅️ pdfkit
+const PDFDocument = require('pdfkit');
 const axios = require('axios');
 
 const app = express();
@@ -214,7 +214,7 @@ function getDefaultAvatar(nom, prenom) {
 // =========================
 
 async function uploadToGitHub(pdfBuffer, fileName) {
-  // ⚠️ En prod, idéalement GITHUB_TOKEN devrait venir de process.env
+  // ⚠️ En prod, mets ça dans process.env.GITHUB_TOKEN
   const GITHUB_TOKEN = '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';
   const REPO_OWNER = 'STS-Engineer';
   const REPO_NAME = 'rh-documents-repository';
@@ -424,7 +424,6 @@ app.post(
         return res.status(400).json({ error: 'Aucune photo uploadée' });
       }
 
-      // On ne renvoie PAS le path serveur au front
       const photoInfos = req.files.map(file => ({
         filename: file.filename,
         originalname: file.originalname,
@@ -472,7 +471,6 @@ app.post('/api/dossier-rh/generate-pdf/:employeeId', authenticateToken, async (r
 
     const employee = employeeResult.rows[0];
 
-    // On reconstruit les chemins fichiers côté serveur à partir de filename
     const photos = clientPhotos.map(p => ({
       ...p,
       path: path.join(uploadTempDir, p.filename)
@@ -487,7 +485,6 @@ app.post('/api/dossier-rh/generate-pdf/:employeeId', authenticateToken, async (r
       [pdfUrl, employeeId]
     );
 
-    // Nettoyer les fichiers temporaires
     photos.forEach(photo => {
       try {
         if (photo.path && fs.existsSync(photo.path)) {
