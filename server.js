@@ -45,15 +45,14 @@ const pool = new Pool(dbConfig);
 // Logs de configuration
 // =========================
 
-console.log("🔧 Variables d'environnement:", {
+console.log('🔧 Variables d\'environnement:', {
   DB_USER: process.env.DB_USER || '❌ Manquant',
   DB_HOST: process.env.DB_HOST || '❌ Manquant',
   DB_NAME: process.env.DB_NAME || '❌ Manquant',
   DB_PORT: process.env.DB_PORT || '5432 (défaut)',
   JWT_SECRET: process.env.JWT_SECRET ? '✅ Défini' : '❌ Manquant',
   FRONTEND_URL: process.env.FRONTEND_URL || '❌ Non défini',
-  NODE_ENV: process.env.NODE_ENV || 'development',
-  GITHUB_TOKEN: process.env.GITHUB_TOKEN ? '✅ Défini' : '❌ Manquant'
+  NODE_ENV: process.env.NODE_ENV || 'development'
 });
 
 // JWT secret
@@ -62,7 +61,7 @@ const JWT_SECRET =
 
 if (!process.env.JWT_SECRET) {
   console.warn(
-    "⚠️  JWT_SECRET non défini dans .env - utilisation d'un secret de développement"
+    '⚠️  JWT_SECRET non défini dans .env - utilisation d\'un secret de développement'
   );
 }
 
@@ -102,12 +101,18 @@ app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 // =========================
 
 const uploadTempDir = path.join(__dirname, 'uploads', 'temp');
+const pdfStorageDir = path.join(__dirname, 'uploads', 'pdfs');
+
+// Créer les dossiers s'ils n'existent pas
+[uploadTempDir, pdfStorageDir].forEach(dir => {
+  if (!fs.existsSync(dir)) {
+    fs.mkdirSync(dir, { recursive: true });
+    console.log(`📁 Dossier créé: ${dir}`);
+  }
+});
 
 const storage = multer.diskStorage({
   destination: function (req, file, cb) {
-    if (!fs.existsSync(uploadTempDir)) {
-      fs.mkdirSync(uploadTempDir, { recursive: true });
-    }
     cb(null, uploadTempDir);
   },
   filename: function (req, file, cb) {
@@ -180,7 +185,7 @@ const authenticateToken = (req, res, next) => {
 };
 
 // =========================
-– Utilitaires
+// Utilitaires
 // =========================
 
 function isValidUrl(string) {
@@ -211,7 +216,7 @@ function getDefaultAvatar(nom, prenom) {
 }
 
 // =========================
-// Routes Dossier RH (à placer avant le reste des routes spécifiques si besoin)
+// Routes Dossier RH
 // =========================
 
 // Upload des photos temporaires
@@ -226,7 +231,7 @@ app.post(
   async (req, res) => {
     try {
       console.log('📸 Upload photos - Files reçus:', req.files?.length || 0);
-
+      
       if (!req.files || req.files.length === 0) {
         console.log('❌ Aucun fichier reçu');
         return res.status(400).json({ error: 'Aucune photo uploadée' });
@@ -256,7 +261,7 @@ app.post(
   }
 );
 
-// Générer le PDF et le stocker sur GitHub
+// Générer le PDF et le stocker localement
 app.post(
   '/api/dossier-rh/generate-pdf/:employeeId',
   authenticateToken,
@@ -304,7 +309,7 @@ app.post(
         });
       }
 
-      const pdfUrl = await generateAndUploadPDF(employee, photos, dossierName);
+      const pdfUrl = await generateAndSavePDF(employee, photos, dossierName);
 
       const updateResult = await pool.query(
         'UPDATE employees SET dossier_rh = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2 RETURNING *',
@@ -346,8 +351,8 @@ app.post(
   }
 );
 
-// Génération + upload PDF (pdfkit) – unique définition
-async function generateAndUploadPDF(employee, photos, dossierName) {
+// Génération + sauvegarde PDF local
+async function generateAndSavePDF(employee, photos, dossierName) {
   return new Promise((resolve, reject) => {
     try {
       console.log('🧾 Début génération PDF avec pdfkit...');
@@ -364,17 +369,18 @@ async function generateAndUploadPDF(employee, photos, dossierName) {
         try {
           const pdfBuffer = Buffer.concat(buffers);
           const fileName = `dossier-${employee.matricule || 'EMP'}-${Date.now()}.pdf`;
-          console.log('⬆️ Upload sur GitHub du fichier:', fileName);
-          const pdfUrl = await uploadToGitHub(pdfBuffer, fileName);
-          console.log('✅ PDF uploadé sur GitHub:', pdfUrl);
+          console.log('💾 Sauvegarde locale du fichier:', fileName);
+          
+          const pdfUrl = await savePDFLocally(pdfBuffer, fileName);
+          console.log('✅ PDF sauvegardé localement:', pdfUrl);
           resolve(pdfUrl);
-        } catch (uploadError) {
-          console.error('❌ Erreur upload GitHub dans generateAndUploadPDF:', uploadError);
-          reject(uploadError);
+        } catch (saveError) {
+          console.error('❌ Erreur sauvegarde locale:', saveError);
+          reject(saveError);
         }
       });
 
-      // Page de couverture
+      // Contenu du PDF
       doc.fontSize(24).text('DOSSIER RH', { align: 'left' });
       doc.moveDown(2);
 
@@ -397,13 +403,8 @@ async function generateAndUploadPDF(employee, photos, dossierName) {
       if (Array.isArray(photos)) {
         photos.forEach((photo, index) => {
           try {
-            if (!photo.path) {
-              console.warn('⚠️ Photo sans path côté serveur:', photo);
-              return;
-            }
-
-            if (!fs.existsSync(photo.path)) {
-              console.warn('⚠️ Fichier photo introuvable sur le disque:', photo.path);
+            if (!photo.path || !fs.existsSync(photo.path)) {
+              console.warn('⚠️ Photo introuvable:', photo.path);
               return;
             }
 
@@ -436,66 +437,55 @@ async function generateAndUploadPDF(employee, photos, dossierName) {
             );
           }
         });
-      } else {
-        console.warn('⚠️ Aucun tableau de photos fourni à generateAndUploadPDF');
       }
 
       doc.end();
     } catch (error) {
-      console.error('❌ Erreur générale generateAndUploadPDF:', error);
+      console.error('❌ Erreur générale generateAndSavePDF:', error);
       reject(error);
     }
   });
 }
 
-// =========================
-// GitHub upload
-// =========================
-
-async function uploadToGitHub(pdfBuffer, fileName) {
-  const GITHUB_TOKEN = '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'; // ⚠️ À définir dans .env
-
-  const REPO_OWNER = 'STS-Engineer';
-  const REPO_NAME = 'rh-documents-repository';
-  const BRANCH = 'main';
-  const PDF_FOLDER = 'pdf_rh';
-
-  if (!GITHUB_TOKEN) {
-    console.error('❌ GITHUB_TOKEN non défini dans les variables d’environnement');
-    throw new Error('GITHUB_TOKEN non défini sur le serveur');
-  }
-
-  const apiUrl = `https://api.github.com/repos/${REPO_OWNER}/${REPO_NAME}/contents/${PDF_FOLDER}/${fileName}`;
-  const content = pdfBuffer.toString('base64');
-
-  const data = {
-    message: `Ajout du dossier RH: ${fileName}`,
-    content: content,
-    branch: BRANCH
-  };
-
+// Sauvegarde locale du PDF
+async function savePDFLocally(pdfBuffer, fileName) {
   try {
-    const response = await axios.put(apiUrl, data, {
-      headers: {
-        Authorization: `Bearer ${GITHUB_TOKEN}`, // recommandé pour les fine-grained PAT
-        'Content-Type': 'application/json',
-        'User-Agent': 'rh-backend'
-      }
-    });
-
-    return response.data.content.download_url;
+    const filePath = path.join(pdfStorageDir, fileName);
+    fs.writeFileSync(filePath, pdfBuffer);
+    
+    // URL accessible via une route dédiée
+    const baseUrl = process.env.BACKEND_URL || 'https://backend-rh.azurewebsites.net';
+    const pdfUrl = `${baseUrl}/api/pdfs/${fileName}`;
+    
+    console.log('✅ PDF sauvegardé:', filePath);
+    console.log('🔗 URL accessible:', pdfUrl);
+    
+    return pdfUrl;
   } catch (error) {
-    console.error(
-      '❌ Erreur upload GitHub (détail brut):',
-      error.response?.data || error.message
-    );
-
-    const githubMessage =
-      error.response?.data?.message || error.message || 'Erreur GitHub inconnue';
-
-    throw new Error(`GitHub: ${githubMessage}`);
+    console.error('❌ Erreur sauvegarde locale PDF:', error);
+    throw new Error('Impossible de sauvegarder le PDF localement');
   }
 }
+
+// Route pour servir les PDF
+app.get('/api/pdfs/:filename', (req, res) => {
+  try {
+    const filename = req.params.filename;
+    const filePath = path.join(pdfStorageDir, filename);
+    
+    if (!fs.existsSync(filePath)) {
+      return res.status(404).json({ error: 'PDF non trouvé' });
+    }
+
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `inline; filename="${filename}"`);
+    res.sendFile(filePath);
+    
+  } catch (error) {
+    console.error('❌ Erreur service PDF:', error);
+    res.status(500).json({ error: 'Erreur lors du chargement du PDF' });
+  }
+});
 
 // =========================
 // ROUTES RH
@@ -524,7 +514,8 @@ app.get('/', (req, res) => {
       'PUT  /api/demandes/:id/statut',
       'DELETE /api/demandes/:id',
       'POST /api/dossier-rh/upload-photos',
-      'POST /api/dossier-rh/generate-pdf/:employeeId'
+      'POST /api/dossier-rh/generate-pdf/:employeeId',
+      'GET  /api/pdfs/:filename'
     ]
   });
 });
@@ -1371,7 +1362,8 @@ app.listen(PORT, () => {
   console.log(`🗄️  Base: ${process.env.DB_NAME} @ ${process.env.DB_HOST}`);
   console.log(`🔐 JWT: ${process.env.JWT_SECRET ? '✅' : '⚠️'}`);
   console.log(`🌍 ENV: ${process.env.NODE_ENV || 'development'}`);
-  console.log('📋 Nouvelles routes dossier RH activées');
+  console.log('📋 Routes dossier RH avec stockage local activées');
+  console.log('📁 Dossier PDFs:', pdfStorageDir);
   console.log('='.repeat(60) + '\n');
 });
 
