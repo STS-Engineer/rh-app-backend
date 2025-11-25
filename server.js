@@ -215,7 +215,7 @@ function getDefaultAvatar(nom, prenom) {
 
 async function uploadToGitHub(pdfBuffer, fileName) {
   // ⚠️ En prod, mets ça dans process.env.GITHUB_TOKEN
-  const GITHUB_TOKEN = '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';
+  const GITHUB_TOKEN = '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';
   const REPO_OWNER = 'STS-Engineer';
   const REPO_NAME = 'rh-documents-repository';
   const BRANCH = 'main';
