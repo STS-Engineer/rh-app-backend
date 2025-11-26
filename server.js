@@ -101,18 +101,12 @@ app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 // =========================
 
 const uploadTempDir = path.join(__dirname, 'uploads', 'temp');
-const pdfStorageDir = path.join(__dirname, 'uploads', 'pdfs');
-
-// Créer les dossiers s'ils n'existent pas
-[uploadTempDir, pdfStorageDir].forEach(dir => {
-  if (!fs.existsSync(dir)) {
-    fs.mkdirSync(dir, { recursive: true });
-    console.log(`📁 Dossier créé: ${dir}`);
-  }
-});
 
 const storage = multer.diskStorage({
   destination: function (req, file, cb) {
+    if (!fs.existsSync(uploadTempDir)) {
+      fs.mkdirSync(uploadTempDir, { recursive: true });
+    }
     cb(null, uploadTempDir);
   },
   filename: function (req, file, cb) {
@@ -214,9 +208,8 @@ function getDefaultAvatar(nom, prenom) {
   const color = colors[Math.floor(Math.random() * colors.length)];
   return `https://ui-avatars.com/api/?name=${initiales}&background=${color}&color=fff&size=150`;
 }
-
 // =========================
-// Routes Dossier RH
+// Routes Dossier RH (PLACEZ CES ROUTES AVANT LES AUTRES)
 // =========================
 
 // Upload des photos temporaires
@@ -261,7 +254,7 @@ app.post(
   }
 );
 
-// Générer le PDF et le stocker localement
+// Générer le PDF et le stocker sur GitHub
 app.post(
   '/api/dossier-rh/generate-pdf/:employeeId',
   authenticateToken,
@@ -309,7 +302,7 @@ app.post(
         });
       }
 
-      const pdfUrl = await generateAndSavePDF(employee, photos, dossierName);
+      const pdfUrl = await generateAndUploadPDF(employee, photos, dossierName);
 
       const updateResult = await pool.query(
         'UPDATE employees SET dossier_rh = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2 RETURNING *',
@@ -351,8 +344,8 @@ app.post(
   }
 );
 
-// Génération + sauvegarde PDF local
-async function generateAndSavePDF(employee, photos, dossierName) {
+// Génération + upload PDF (pdfkit)
+async function generateAndUploadPDF(employee, photos, dossierName) {
   return new Promise((resolve, reject) => {
     try {
       console.log('🧾 Début génération PDF avec pdfkit...');
@@ -369,18 +362,17 @@ async function generateAndSavePDF(employee, photos, dossierName) {
         try {
           const pdfBuffer = Buffer.concat(buffers);
           const fileName = `dossier-${employee.matricule || 'EMP'}-${Date.now()}.pdf`;
-          console.log('💾 Sauvegarde locale du fichier:', fileName);
-          
-          const pdfUrl = await savePDFLocally(pdfBuffer, fileName);
-          console.log('✅ PDF sauvegardé localement:', pdfUrl);
+          console.log('⬆️ Upload sur GitHub du fichier:', fileName);
+          const pdfUrl = await uploadToGitHub(pdfBuffer, fileName);
+          console.log('✅ PDF uploadé sur GitHub:', pdfUrl);
           resolve(pdfUrl);
-        } catch (saveError) {
-          console.error('❌ Erreur sauvegarde locale:', saveError);
-          reject(saveError);
+        } catch (uploadError) {
+          console.error('❌ Erreur upload GitHub dans generateAndUploadPDF:', uploadError);
+          reject(uploadError);
         }
       });
 
-      // Contenu du PDF
+      // Page de couverture
       doc.fontSize(24).text('DOSSIER RH', { align: 'left' });
       doc.moveDown(2);
 
@@ -403,8 +395,13 @@ async function generateAndSavePDF(employee, photos, dossierName) {
       if (Array.isArray(photos)) {
         photos.forEach((photo, index) => {
           try {
-            if (!photo.path || !fs.existsSync(photo.path)) {
-              console.warn('⚠️ Photo introuvable:', photo.path);
+            if (!photo.path) {
+              console.warn('⚠️ Photo sans path côté serveur:', photo);
+              return;
+            }
+
+            if (!fs.existsSync(photo.path)) {
+              console.warn('⚠️ Fichier photo introuvable sur le disque:', photo.path);
               return;
             }
 
@@ -437,55 +434,66 @@ async function generateAndSavePDF(employee, photos, dossierName) {
             );
           }
         });
+      } else {
+        console.warn('⚠️ Aucun tableau de photos fourni à generateAndUploadPDF');
       }
 
       doc.end();
     } catch (error) {
-      console.error('❌ Erreur générale generateAndSavePDF:', error);
+      console.error('❌ Erreur générale generateAndUploadPDF:', error);
       reject(error);
     }
   });
 }
+// =========================
+// GitHub upload
+// =========================
 
-// Sauvegarde locale du PDF
-async function savePDFLocally(pdfBuffer, fileName) {
+async function uploadToGitHub(pdfBuffer, fileName) {
+  
+  const GITHUB_TOKEN = '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';
+  
+  const REPO_OWNER = 'STS-Engineer';
+  const REPO_NAME = 'rh-documents-repository';
+  const BRANCH = 'main';
+  const PDF_FOLDER = 'pdf_rh'; 
+
+  if (!GITHUB_TOKEN) {
+    console.error('❌ GITHUB_TOKEN non défini dans les variables d’environnement');
+    throw new Error('GITHUB_TOKEN non défini sur le serveur');
+  }
+
+  const apiUrl = `https://api.github.com/repos/${REPO_OWNER}/${REPO_NAME}/contents/${PDF_FOLDER}/${fileName}`;
+
+  const content = pdfBuffer.toString('base64');
+
+  const data = {
+    message: `Ajout du dossier RH: ${fileName}`,
+    content: content,
+    branch: BRANCH
+  };
+
   try {
-    const filePath = path.join(pdfStorageDir, fileName);
-    fs.writeFileSync(filePath, pdfBuffer);
-    
-    // URL accessible via une route dédiée
-    const baseUrl = process.env.BACKEND_URL || 'https://backend-rh.azurewebsites.net';
-    const pdfUrl = `${baseUrl}/api/pdfs/${fileName}`;
-    
-    console.log('✅ PDF sauvegardé:', filePath);
-    console.log('🔗 URL accessible:', pdfUrl);
-    
-    return pdfUrl;
+    const response = await axios.put(apiUrl, data, {
+      headers: {
+        Authorization: `token ${GITHUB_TOKEN}`,
+        'Content-Type': 'application/json',
+        'User-Agent': 'rh-backend' // GitHub aime bien avoir un User-Agent
+      }
+    });
+
+    return response.data.content.download_url;
   } catch (error) {
-    console.error('❌ Erreur sauvegarde locale PDF:', error);
-    throw new Error('Impossible de sauvegarder le PDF localement');
+    console.error('❌ Erreur upload GitHub (détail brut):', error.response?.data || error.message);
+
+    const githubMessage =
+      error.response?.data?.message || error.message || 'Erreur GitHub inconnue';
+
+    // On remonte le message GitHub au front dans "details"
+    throw new Error(`GitHub: ${githubMessage}`);
   }
 }
 
-// Route pour servir les PDF
-app.get('/api/pdfs/:filename', (req, res) => {
-  try {
-    const filename = req.params.filename;
-    const filePath = path.join(pdfStorageDir, filename);
-    
-    if (!fs.existsSync(filePath)) {
-      return res.status(404).json({ error: 'PDF non trouvé' });
-    }
-
-    res.setHeader('Content-Type', 'application/pdf');
-    res.setHeader('Content-Disposition', `inline; filename="${filename}"`);
-    res.sendFile(filePath);
-    
-  } catch (error) {
-    console.error('❌ Erreur service PDF:', error);
-    res.status(500).json({ error: 'Erreur lors du chargement du PDF' });
-  }
-});
 
 // =========================
 // ROUTES RH
@@ -514,8 +522,7 @@ app.get('/', (req, res) => {
       'PUT  /api/demandes/:id/statut',
       'DELETE /api/demandes/:id',
       'POST /api/dossier-rh/upload-photos',
-      'POST /api/dossier-rh/generate-pdf/:employeeId',
-      'GET  /api/pdfs/:filename'
+      'POST /api/dossier-rh/generate-pdf/:employeeId'
     ]
   });
 });
@@ -651,6 +658,217 @@ app.post('/api/auth/login', async (req, res) => {
     });
   }
 });
+
+// =========================
+// Routes Dossier RH
+// =========================
+
+// Upload des photos temporaires
+app.post(
+  '/api/dossier-rh/upload-photos',
+  authenticateToken,
+  upload.array('photos', 10),
+  async (req, res) => {
+    try {
+      if (!req.files || req.files.length === 0) {
+        return res.status(400).json({ error: 'Aucune photo uploadée' });
+      }
+
+      const photoInfos = req.files.map(file => ({
+        filename: file.filename,
+        originalname: file.originalname,
+        size: file.size
+      }));
+
+      res.json({
+        success: true,
+        photos: photoInfos,
+        message: `${req.files.length} photo(s) uploadée(s) avec succès`
+      });
+    } catch (error) {
+      console.error('❌ Erreur upload photos:', error);
+      res.status(500).json({
+        error: "Erreur lors de l'upload des photos",
+        details: error.message
+      });
+    }
+  }
+);
+
+// Générer le PDF et le stocker sur GitHub
+app.post('/api/dossier-rh/generate-pdf/:employeeId', authenticateToken, async (req, res) => {
+  try {
+    const { employeeId } = req.params;
+    const { photos: clientPhotos, dossierName } = req.body;
+
+    console.log('📄 Génération PDF pour employé:', employeeId, 'dossier:', dossierName);
+
+    if (!dossierName || !dossierName.trim()) {
+      return res.status(400).json({ error: 'Nom de dossier manquant' });
+    }
+
+    if (!Array.isArray(clientPhotos) || clientPhotos.length === 0) {
+      return res.status(400).json({ error: 'Aucune photo fournie pour le dossier' });
+    }
+
+    const employeeResult = await pool.query('SELECT * FROM employees WHERE id = $1', [
+      employeeId
+    ]);
+
+    if (employeeResult.rows.length === 0) {
+      return res.status(404).json({ error: 'Employé non trouvé' });
+    }
+
+    const employee = employeeResult.rows[0];
+
+    const photos = clientPhotos.map(p => ({
+      ...p,
+      path: path.join(uploadTempDir, p.filename)
+    }));
+
+    console.log('📸 Photos pour PDF:', photos);
+
+    const pdfUrl = await generateAndUploadPDF(employee, photos, dossierName);
+
+    const updateResult = await pool.query(
+      'UPDATE employees SET dossier_rh = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2 RETURNING *',
+      [pdfUrl, employeeId]
+    );
+
+    photos.forEach(photo => {
+      try {
+        if (photo.path && fs.existsSync(photo.path)) {
+          fs.unlinkSync(photo.path);
+          console.log('🧹 Fichier temporaire supprimé:', photo.path);
+        }
+      } catch (cleanupErr) {
+        console.warn(
+          '⚠️ Erreur suppression fichier temporaire:',
+          photo.path,
+          cleanupErr.message
+        );
+      }
+    });
+
+    res.json({
+      success: true,
+      message: 'Dossier RH généré avec succès',
+      pdfUrl: pdfUrl,
+      employee: updateResult.rows[0]
+    });
+  } catch (error) {
+    console.error('❌ Erreur génération PDF (route):', {
+      message: error.message,
+      stack: error.stack
+    });
+    res.status(500).json({
+      error: 'Erreur lors de la génération du PDF',
+      details: error.message
+    });
+  }
+});
+
+// Génération + upload PDF (pdfkit)
+async function generateAndUploadPDF(employee, photos, dossierName) {
+  return new Promise((resolve, reject) => {
+    try {
+      console.log('🧾 Début génération PDF avec pdfkit...');
+      const doc = new PDFDocument({ size: 'A4', margin: 50 });
+      const buffers = [];
+
+      doc.on('data', chunk => buffers.push(chunk));
+      doc.on('error', err => {
+        console.error('❌ Erreur PDFKit:', err);
+        reject(err);
+      });
+
+      doc.on('end', async () => {
+        try {
+          const pdfBuffer = Buffer.concat(buffers);
+          const fileName = `dossier-${employee.matricule || 'EMP'}-${Date.now()}.pdf`;
+          console.log('⬆️ Upload sur GitHub du fichier:', fileName);
+          const pdfUrl = await uploadToGitHub(pdfBuffer, fileName);
+          console.log('✅ PDF uploadé sur GitHub:', pdfUrl);
+          resolve(pdfUrl);
+        } catch (uploadError) {
+          console.error('❌ Erreur upload GitHub dans generateAndUploadPDF:', uploadError);
+          reject(uploadError);
+        }
+      });
+
+      // Page de couverture
+      doc.fontSize(24).text('DOSSIER RH', { align: 'left' });
+      doc.moveDown(2);
+
+      doc.fontSize(16).text(`Employé : ${employee.prenom} ${employee.nom}`);
+      doc.moveDown(0.5);
+      doc.fontSize(14).text(`Matricule : ${employee.matricule || '-'}`);
+      doc.moveDown(0.5);
+      doc.fontSize(14).text(`Poste : ${employee.poste || '-'}`);
+      doc.moveDown(0.5);
+      doc.fontSize(14).text(`Département / Site : ${employee.site_dep || '-'}`);
+      doc.moveDown(0.5);
+      doc.fontSize(14).text(`Nom du dossier : ${dossierName || '-'}`);
+      doc.moveDown(0.5);
+      doc
+        .fontSize(12)
+        .text(`Date de génération : ${new Date().toLocaleDateString('fr-FR')}`);
+      doc.addPage();
+
+      // Pages des photos
+      if (Array.isArray(photos)) {
+        photos.forEach((photo, index) => {
+          try {
+            if (!photo.path) {
+              console.warn('⚠️ Photo sans path côté serveur:', photo);
+              return;
+            }
+
+            if (!fs.existsSync(photo.path)) {
+              console.warn('⚠️ Fichier photo introuvable sur le disque:', photo.path);
+              return;
+            }
+
+            if (index > 0) {
+              doc.addPage();
+            }
+
+            const pageWidth = doc.page.width;
+            const pageHeight = doc.page.height;
+            const maxWidth = pageWidth - 100;
+            const maxHeight = pageHeight - 150;
+
+            doc
+              .fontSize(12)
+              .text(`Photo : ${photo.originalname || photo.filename}`, 50, 50);
+
+            doc.image(photo.path, {
+              fit: [maxWidth, maxHeight],
+              align: 'center',
+              valign: 'center',
+              x: 50,
+              y: 100
+            });
+
+            console.log('📄 Photo ajoutée au PDF:', photo.path);
+          } catch (imageError) {
+            console.error(
+              `❌ Erreur avec la photo ${photo.filename}:`,
+              imageError.message
+            );
+          }
+        });
+      } else {
+        console.warn('⚠️ Aucun tableau de photos fourni à generateAndUploadPDF');
+      }
+
+      doc.end();
+    } catch (error) {
+      console.error('❌ Erreur générale generateAndUploadPDF:', error);
+      reject(error);
+    }
+  });
+}
 
 // =========================
 // Routes Employés
@@ -1362,8 +1580,7 @@ app.listen(PORT, () => {
   console.log(`🗄️  Base: ${process.env.DB_NAME} @ ${process.env.DB_HOST}`);
   console.log(`🔐 JWT: ${process.env.JWT_SECRET ? '✅' : '⚠️'}`);
   console.log(`🌍 ENV: ${process.env.NODE_ENV || 'development'}`);
-  console.log('📋 Routes dossier RH avec stockage local activées');
-  console.log('📁 Dossier PDFs:', pdfStorageDir);
+  console.log('📋 Nouvelles routes dossier RH activées');
   console.log('='.repeat(60) + '\n');
 });
 
