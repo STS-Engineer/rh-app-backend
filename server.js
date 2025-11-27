@@ -977,7 +977,7 @@ app.get('/api/demandes', authenticateToken, async (req, res) => {
       date_fin,
       employe_id,
       page = 1,
-      limit = 1000
+      limit = 10
     } = req.query;
 
     console.log('📋 Récupération des demandes RH avec filtres:', {
