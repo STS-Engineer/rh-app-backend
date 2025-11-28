@@ -1,4 +1,4 @@
- // server.js
+// server.js
 require('dotenv').config({ path: __dirname + '/.env' });
 
 const express = require('express');
@@ -1225,6 +1225,37 @@ app.put('/api/demandes/:id', authenticateToken, async (req, res) => {
       commentaire_refus
     } = req.body;
 
+    // Logique de statut automatique CORRIGÉE
+    let finalStatut = statut;
+    
+    if (approuve_responsable1 === false || approuve_responsable2 === false) {
+      // Si un des responsables refuse, la demande est refusée
+      finalStatut = 'refuse';
+    } else if (approuve_responsable1 === true && approuve_responsable2 === true) {
+      // Si les deux responsables approuvent, la demande est approuvée
+      finalStatut = 'approuve';
+    } else if (approuve_responsable1 === true && !approuve_responsable2) {
+      // Si seulement le responsable 1 a approuvé
+      const employeeResult = await pool.query(
+        'SELECT mail_responsable2 FROM employees WHERE id = (SELECT employe_id FROM demande_rh WHERE id = $1)',
+        [id]
+      );
+      
+      if (employeeResult.rows.length > 0 && !employeeResult.rows[0].mail_responsable2) {
+        // Si pas de deuxième responsable, la demande est approuvée
+        finalStatut = 'approuve';
+      } else {
+        // Sinon, en attente du deuxième responsable
+        finalStatut = 'en_attente';
+      }
+    } else if (approuve_responsable2 === true && !approuve_responsable1) {
+      // Si seulement le responsable 2 a approuvé, en attente du premier
+      finalStatut = 'en_attente';
+    } else {
+      // Par défaut, en attente
+      finalStatut = finalStatut || 'en_attente';
+    }
+
     const result = await pool.query(
       `
       UPDATE demande_rh 
@@ -1247,7 +1278,7 @@ app.put('/api/demandes/:id', authenticateToken, async (req, res) => {
         heure_retour || null,
         demi_journee || false,
         frais_deplacement ? parseFloat(frais_deplacement) : null,
-        statut || 'en_attente',
+        finalStatut,
         approuve_responsable1 || false,
         approuve_responsable2 || false,
         commentaire_refus || null,
@@ -1259,7 +1290,7 @@ app.put('/api/demandes/:id', authenticateToken, async (req, res) => {
       return res.status(404).json({ error: 'Demande non trouvée' });
     }
 
-    console.log('✅ Demande mise à jour');
+    console.log('✅ Demande mise à jour - Statut:', finalStatut);
     res.json(result.rows[0]);
   } catch (error) {
     console.error('❌ Erreur mise à jour demande:', error);
