@@ -102,15 +102,44 @@ app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
 const uploadTempDir = path.join(__dirname, 'uploads', 'temp');
 const pdfStorageDir = path.join(__dirname, 'uploads', 'pdfs');
+const photosStorageDir = path.join(__dirname, 'uploads', 'photos');
 
 // Créer les dossiers s'ils n'existent pas
-[uploadTempDir, pdfStorageDir].forEach(dir => {
+[uploadTempDir, pdfStorageDir, photosStorageDir].forEach(dir => {
   if (!fs.existsSync(dir)) {
     fs.mkdirSync(dir, { recursive: true });
     console.log(`📁 Dossier créé: ${dir}`);
   }
 });
 
+// Configuration pour les photos d'employés
+const photoStorage = multer.diskStorage({
+  destination: function (req, file, cb) {
+    cb(null, photosStorageDir);
+  },
+  filename: function (req, file, cb) {
+    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1e9);
+    const extension = path.extname(file.originalname).toLowerCase();
+    cb(null, 'employee-photo-' + uniqueSuffix + extension);
+  }
+});
+
+const uploadPhoto = multer({
+  storage: photoStorage,
+  limits: {
+    fileSize: 5 * 1024 * 1024 // 5MB max
+  },
+  fileFilter: function (req, file, cb) {
+    const allowedMimes = ['image/jpeg', 'image/jpg', 'image/png', 'image/gif'];
+    if (allowedMimes.includes(file.mimetype)) {
+      cb(null, true);
+    } else {
+      cb(new Error('Seules les images (JPEG, JPG, PNG, GIF) sont autorisées!'), false);
+    }
+  }
+});
+
+// Configuration pour les photos temporaires (dossier RH)
 const storage = multer.diskStorage({
   destination: function (req, file, cb) {
     cb(null, uploadTempDir);
@@ -216,8 +245,158 @@ function getDefaultAvatar(nom, prenom) {
 }
 
 // =========================
-// Routes Dossier RH
+// Routes pour les photos d'employés
 // =========================
+
+// Upload de photo pour employé
+app.post(
+  '/api/employees/:id/upload-photo',
+  authenticateToken,
+  uploadPhoto.single('photo'),
+  async (req, res) => {
+    try {
+      const { id } = req.params;
+      
+      console.log('📸 Upload photo pour employé ID:', id);
+      
+      if (!req.file) {
+        return res.status(400).json({ error: 'Aucune photo uploadée' });
+      }
+
+      // Vérifier que l'employé existe
+      const employeeResult = await pool.query('SELECT * FROM employees WHERE id = $1', [id]);
+      if (employeeResult.rows.length === 0) {
+        // Supprimer le fichier uploadé si l'employé n'existe pas
+        fs.unlinkSync(req.file.path);
+        return res.status(404).json({ error: 'Employé non trouvé' });
+      }
+
+      const employee = employeeResult.rows[0];
+
+      // Générer l'URL de la photo
+      const baseUrl = process.env.BACKEND_URL || 'https://backend-rh.azurewebsites.net';
+      const photoUrl = `${baseUrl}/api/photo/${req.file.filename}`;
+
+      console.log('📸 Photo uploadée:', {
+        filename: req.file.filename,
+        originalname: req.file.originalname,
+        size: req.file.size,
+        url: photoUrl
+      });
+
+      // Mettre à jour l'employé avec la nouvelle photo
+      const updateResult = await pool.query(
+        'UPDATE employees SET photo = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2 RETURNING *',
+        [photoUrl, id]
+      );
+
+      res.json({
+        success: true,
+        message: 'Photo uploadée avec succès',
+        photoUrl: photoUrl,
+        employee: updateResult.rows[0]
+      });
+
+    } catch (error) {
+      console.error('❌ Erreur upload photo employé:', error);
+      
+      // Supprimer le fichier en cas d'erreur
+      if (req.file && fs.existsSync(req.file.path)) {
+        fs.unlinkSync(req.file.path);
+      }
+      
+      res.status(500).json({
+        error: "Erreur lors de l'upload de la photo",
+        details: error.message
+      });
+    }
+  }
+);
+
+// Servir les photos
+app.get('/api/photo/:filename', (req, res) => {
+  try {
+    const filename = req.params.filename;
+    const filePath = path.join(photosStorageDir, filename);
+    
+    if (!fs.existsSync(filePath)) {
+      return res.status(404).json({ error: 'Photo non trouvée' });
+    }
+
+    // Déterminer le type MIME en fonction de l'extension
+    const ext = path.extname(filename).toLowerCase();
+    let contentType = 'image/jpeg';
+    
+    if (ext === '.png') contentType = 'image/png';
+    else if (ext === '.gif') contentType = 'image/gif';
+    else if (ext === '.webp') contentType = 'image/webp';
+
+    res.setHeader('Content-Type', contentType);
+    res.setHeader('Cache-Control', 'public, max-age=86400'); // Cache 1 jour
+    res.sendFile(filePath);
+    
+  } catch (error) {
+    console.error('❌ Erreur service photo:', error);
+    res.status(500).json({ error: 'Erreur lors du chargement de la photo' });
+  }
+});
+
+// Supprimer une photo d'employé
+app.delete('/api/employees/:id/photo', authenticateToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+    
+    console.log('🗑️ Suppression photo employé ID:', id);
+
+    // Récupérer l'employé
+    const employeeResult = await pool.query('SELECT * FROM employees WHERE id = $1', [id]);
+    if (employeeResult.rows.length === 0) {
+      return res.status(404).json({ error: 'Employé non trouvé' });
+    }
+
+    const employee = employeeResult.rows[0];
+    
+    if (!employee.photo || !employee.photo.includes('/api/photo/')) {
+      return res.status(400).json({ error: 'Aucune photo uploadée à supprimer' });
+    }
+
+    // Extraire le nom du fichier de l'URL
+    const filename = employee.photo.split('/api/photo/')[1];
+    const filePath = path.join(photosStorageDir, filename);
+
+    // Supprimer le fichier physique s'il existe
+    if (fs.existsSync(filePath)) {
+      fs.unlinkSync(filePath);
+      console.log('🗑️ Fichier photo supprimé:', filePath);
+    }
+
+    // Mettre à jour l'employé avec l'avatar par défaut
+    const defaultAvatar = getDefaultAvatar(employee.nom, employee.prenom);
+    const updateResult = await pool.query(
+      'UPDATE employees SET photo = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2 RETURNING *',
+      [defaultAvatar, id]
+    );
+
+    res.json({
+      success: true,
+      message: 'Photo supprimée avec succès',
+      employee: updateResult.rows[0]
+    });
+
+  } catch (error) {
+    console.error('❌ Erreur suppression photo:', error);
+    res.status(500).json({
+      error: "Erreur lors de la suppression de la photo",
+      details: error.message
+    });
+  }
+});
+
+// =========================
+// Routes Dossier RH (existantes)
+// =========================
+
+// [Le reste de votre code existant pour les routes Dossier RH reste inchangé...]
 
 // Upload des photos temporaires
 app.post(
@@ -488,8 +667,10 @@ app.get('/api/pdfs/:filename', (req, res) => {
 });
 
 // =========================
-// ROUTES RH
+// ROUTES RH (existantes)
 // =========================
+
+// [Toutes vos routes existantes restent inchangées...]
 
 // Route racine
 app.get('/', (req, res) => {
@@ -513,6 +694,9 @@ app.get('/', (req, res) => {
       'PUT  /api/demandes/:id',
       'PUT  /api/demandes/:id/statut',
       'DELETE /api/demandes/:id',
+      'POST /api/employees/:id/upload-photo',
+      'DELETE /api/employees/:id/photo',
+      'GET  /api/photo/:filename',
       'POST /api/dossier-rh/upload-photos',
       'POST /api/dossier-rh/generate-pdf/:employeeId',
       'GET  /api/pdfs/:filename'
@@ -909,7 +1093,7 @@ app.post('/api/employees', authenticateToken, async (req, res) => {
 
     let photoUrl = photo;
     if (!photoUrl) {
-      photoUrl = `https://ui-avatars.com/api/?name=${prenom}+${nom}&background=3498db&color=fff&size=150`;
+      photoUrl = getDefaultAvatar(nom, prenom);
     }
 
     const result = await pool.query(
@@ -1393,7 +1577,8 @@ app.listen(PORT, () => {
   console.log(`🗄️  Base: ${process.env.DB_NAME} @ ${process.env.DB_HOST}`);
   console.log(`🔐 JWT: ${process.env.JWT_SECRET ? '✅' : '⚠️'}`);
   console.log(`🌍 ENV: ${process.env.NODE_ENV || 'development'}`);
-  console.log('📋 Routes dossier RH avec stockage local activées');
+  console.log('📸 Upload photos employés activé');
+  console.log('📁 Dossier Photos:', photosStorageDir);
   console.log('📁 Dossier PDFs:', pdfStorageDir);
   console.log('='.repeat(60) + '\n');
 });
