@@ -9,7 +9,7 @@ const jwt = require('jsonwebtoken');
 const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
-const PDFDocument = require('pdfkit');
+const PDFKitDocument = require('pdfkit');
 const axios = require('axios');
 
 const app = express();
@@ -97,7 +97,7 @@ app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
 // =========================
-// Configuration Multer upload
+// Configuration Multer upload (Dossier RH)
 // =========================
 
 const uploadTempDir = path.join(__dirname, 'uploads', 'temp');
@@ -356,7 +356,7 @@ async function generateAndSavePDF(employee, photos, dossierName) {
   return new Promise((resolve, reject) => {
     try {
       console.log('🧾 Début génération PDF avec pdfkit...');
-      const doc = new PDFDocument({ size: 'A4', margin: 50 });
+      const doc = new PDFKitDocument({ size: 'A4', margin: 50 });
       const buffers = [];
 
       doc.on('data', chunk => buffers.push(chunk));
@@ -487,6 +487,276 @@ app.get('/api/pdfs/:filename', (req, res) => {
   }
 });
 
+
+// =========================
+// Routes Fiche de Paie
+// =========================
+
+const { PDFDocument } = require('pdf-lib');
+const pdfParse = require('pdf-parse');
+const nodemailer = require('nodemailer');
+
+// Configuration SMTP Outlook
+const transporter = nodemailer.createTransport({
+  host: 'avocarbon-com.mail.protection.outlook.com',
+  port: 25,
+  secure: false,
+  tls: { rejectUnauthorized: false }
+});
+
+// Configuration Multer pour les PDF de paie
+const uploadPaieDir = path.join(__dirname, 'uploads', 'paie');
+if (!fs.existsSync(uploadPaieDir)) {
+  fs.mkdirSync(uploadPaieDir, { recursive: true });
+  console.log(`📁 Dossier créé: ${uploadPaieDir}`);
+}
+
+const uploadPaie = multer({
+  storage: multer.diskStorage({
+    destination: (req, file, cb) => cb(null, uploadPaieDir),
+    filename: (req, file, cb) => {
+      const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1e9);
+      cb(null, 'paie-' + uniqueSuffix + '.pdf');
+    }
+  }),
+  limits: { fileSize: 50 * 1024 * 1024 }, // 50MB max
+  fileFilter: (req, file, cb) => {
+    if (file.mimetype === 'application/pdf') {
+      cb(null, true);
+    } else {
+      cb(new Error('Seuls les fichiers PDF sont autorisés!'), false);
+    }
+  }
+});
+
+// Fonction pour extraire le matricule d'une page PDF
+function extraireMatricule(texte) {
+  // Recherche du pattern "MATR." suivi de chiffres (2 ou 3 chiffres)
+  const patterns = [
+    /MATR[\.\s]*(\d{1,3})/i,
+    /MATRICULE[\s:]*(\d{1,3})/i,
+    /MATR[\s]*[\.:]\s*(\d{1,3})/i,
+    /MATR\s+(\d{1,3})/i
+  ];
+
+  for (const pattern of patterns) {
+    const match = texte.match(pattern);
+    if (match && match[1]) {
+      return match[1].trim();
+    }
+  }
+  return null;
+}
+
+// Route principale pour traiter les fiches de paie
+app.post(
+  '/api/fiche-paie/process',
+  authenticateToken,
+  uploadPaie.single('pdfFile'),
+  async (req, res) => {
+    console.log('📄 Traitement des fiches de paie...');
+    
+    if (!req.file) {
+      return res.status(400).json({ error: 'Aucun fichier PDF uploadé' });
+    }
+
+    const pdfPath = req.file.path;
+    const results = {
+      total: 0,
+      success: 0,
+      errors: []
+    };
+
+    try {
+      // Charger le PDF principal
+      const pdfBytes = fs.readFileSync(pdfPath);
+      const pdfDoc = await PDFDocument.load(pdfBytes);
+      const totalPages = pdfDoc.getPageCount();
+      
+      console.log(`📑 PDF chargé: ${totalPages} page(s)`);
+      results.total = totalPages;
+
+      // Traiter chaque page
+      for (let i = 0; i < totalPages; i++) {
+        try {
+          console.log(`\n🔍 Traitement page ${i + 1}/${totalPages}`);
+          
+          // Créer un nouveau PDF avec une seule page
+          const singlePagePdf = await PDFDocument.create();
+          const [copiedPage] = await singlePagePdf.copyPages(pdfDoc, [i]);
+          singlePagePdf.addPage(copiedPage);
+          
+          // Sauvegarder temporairement pour extraire le texte
+          const singlePageBytes = await singlePagePdf.save();
+          const tempPath = path.join(uploadPaieDir, `temp-page-${i}.pdf`);
+          fs.writeFileSync(tempPath, singlePageBytes);
+          
+          // Extraire le texte de la page
+          const dataBuffer = fs.readFileSync(tempPath);
+          const pdfData = await pdfParse(dataBuffer);
+          const texte = pdfData.text;
+          
+          console.log('📝 Extrait de texte (200 premiers caractères):', texte.substring(0, 200));
+          
+          // Extraire le matricule
+          const matricule = extraireMatricule(texte);
+          
+          if (!matricule) {
+            console.warn(`⚠️ Page ${i + 1}: Matricule non trouvé`);
+            results.errors.push({
+              page: i + 1,
+              error: 'Matricule non trouvé dans la page'
+            });
+            fs.unlinkSync(tempPath);
+            continue;
+          }
+          
+          console.log(`✅ Matricule trouvé: ${matricule}`);
+          
+          // Rechercher l'employé dans la base
+          const employeResult = await pool.query(
+            'SELECT * FROM employees WHERE matricule = $1',
+            [matricule]
+          );
+          
+          if (employeResult.rows.length === 0) {
+            console.warn(`⚠️ Page ${i + 1}: Employé avec matricule ${matricule} non trouvé`);
+            results.errors.push({
+              page: i + 1,
+              matricule: matricule,
+              error: 'Employé non trouvé dans la base de données'
+            });
+            fs.unlinkSync(tempPath);
+            continue;
+          }
+          
+          const employe = employeResult.rows[0];
+          
+          if (!employe.adresse_mail) {
+            console.warn(`⚠️ Page ${i + 1}: Employé ${employe.nom} ${employe.prenom} sans email`);
+            results.errors.push({
+              page: i + 1,
+              matricule: matricule,
+              employe: `${employe.nom} ${employe.prenom}`,
+              error: 'Adresse email manquante'
+            });
+            fs.unlinkSync(tempPath);
+            continue;
+          }
+          
+          // Nom du fichier final
+          const fileName = `fiche-paie-${matricule}-${Date.now()}.pdf`;
+          const finalPath = path.join(uploadPaieDir, fileName);
+          
+          // Déplacer le fichier temporaire vers le nom final
+          fs.renameSync(tempPath, finalPath);
+          
+          // Envoyer l'email
+          await envoyerFichePaieParEmail(employe, finalPath, fileName);
+          
+          console.log(`✅ Page ${i + 1}: Fiche de paie envoyée à ${employe.adresse_mail}`);
+          results.success++;
+          
+          // Nettoyer le fichier après envoi
+          setTimeout(() => {
+            if (fs.existsSync(finalPath)) {
+              fs.unlinkSync(finalPath);
+              console.log(`🧹 Fichier nettoyé: ${fileName}`);
+            }
+          }, 60000); // Supprimer après 1 minute
+          
+        } catch (pageError) {
+          console.error(`❌ Erreur page ${i + 1}:`, pageError);
+          results.errors.push({
+            page: i + 1,
+            error: pageError.message
+          });
+        }
+      }
+      
+      // Nettoyer le fichier principal uploadé
+      if (fs.existsSync(pdfPath)) {
+        fs.unlinkSync(pdfPath);
+        console.log('🧹 Fichier principal nettoyé');
+      }
+      
+      console.log('\n📊 Résultats finaux:', results);
+      
+      res.json({
+        success: true,
+        message: `Traitement terminé: ${results.success}/${results.total} fiches envoyées`,
+        results: results
+      });
+      
+    } catch (error) {
+      console.error('❌ Erreur traitement PDF:', error);
+      
+      // Nettoyer en cas d'erreur
+      if (fs.existsSync(pdfPath)) {
+        fs.unlinkSync(pdfPath);
+      }
+      
+      res.status(500).json({
+        error: 'Erreur lors du traitement du PDF',
+        details: error.message,
+        results: results
+      });
+    }
+  }
+);
+
+// Fonction pour envoyer la fiche de paie par email
+async function envoyerFichePaieParEmail(employe, pdfPath, fileName) {
+  const moisActuel = new Date().toLocaleDateString('fr-FR', { 
+    month: 'long', 
+    year: 'numeric' 
+  });
+
+  const mailOptions = {
+    from: {
+      name: 'Administration STS',
+      address: 'administration.STS@avocarbon.com'
+    },
+    to: employe.adresse_mail,
+    subject: `Votre fiche de paie - ${moisActuel}`,
+    html: `
+      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+        <h2 style="color: #2563eb; border-bottom: 2px solid #2563eb; padding-bottom: 10px;">
+          📄 Votre fiche de paie
+        </h2>
+        <div style="background: #f8fafc; padding: 20px; border-radius: 8px; margin: 20px 0;">
+          <p><strong>Bonjour ${employe.prenom} ${employe.nom},</strong></p>
+          <p>Veuillez trouver ci-joint votre fiche de paie pour le mois de <strong>${moisActuel}</strong>.</p>
+          <p><strong>Matricule :</strong> ${employe.matricule}</p>
+          <p><strong>Poste :</strong> ${employe.poste || 'N/A'}</p>
+        </div>
+        <p style="color: #6b7280; font-size: 14px;">
+          Ce document est confidentiel et personnel. Merci de le conserver précieusement.
+        </p>
+        <p style="color: #6b7280; font-size: 12px; margin-top: 30px; text-align: center;">
+          Ceci est un message automatique, merci de ne pas y répondre.
+        </p>
+      </div>
+    `,
+    attachments: [
+      {
+        filename: fileName,
+        path: pdfPath,
+        contentType: 'application/pdf'
+      }
+    ]
+  };
+
+  try {
+    await transporter.sendMail(mailOptions);
+    console.log(`📧 Email envoyé à ${employe.adresse_mail}`);
+  } catch (error) {
+    console.error('❌ Erreur envoi email:', error);
+    throw new Error(`Impossible d'envoyer l'email à ${employe.adresse_mail}: ${error.message}`);
+  }
+}
+
+
 // =========================
 // ROUTES RH
 // =========================
@@ -515,7 +785,8 @@ app.get('/', (req, res) => {
       'DELETE /api/demandes/:id',
       'POST /api/dossier-rh/upload-photos',
       'POST /api/dossier-rh/generate-pdf/:employeeId',
-      'GET  /api/pdfs/:filename'
+      'GET  /api/pdfs/:filename',
+      'POST /api/fiche-paie/process'
     ]
   });
 });
@@ -1402,4 +1673,4 @@ process.on('SIGINT', async () => {
   console.log('\n🛑 Arrêt du serveur...');
   await pool.end();
   process.exit(0);
-}); 
+});
