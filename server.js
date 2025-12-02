@@ -547,9 +547,8 @@ function extraireMatricule(texte) {
     
     // Pattern pour "MATR" sans point
     /MATR\s+(\d{1,3})/i,
-    
-    // Pattern pour la structure de tableau comme dans votre PDF
-    /\|\s*(\d{1,3})\s*\|\s*Messal\s+Majed/i,
+  
+  
     
     // Recherche plus générale de matricules dans un contexte tabulaire
     /\|\s*(\d{1,3})\s*\|\s*[A-Z]/i,
