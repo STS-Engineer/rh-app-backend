@@ -530,24 +530,64 @@ const uploadPaie = multer({
 });
 
 // Fonction pour extraire le matricule d'une page PDF
+// Fonction pour extraire le matricule d'une page PDF - VERSION AMÉLIORÉE
 function extraireMatricule(texte) {
-  // Recherche du pattern "MATR." suivi de chiffres (2 ou 3 chiffres)
+  console.log('🔍 Texte complet pour extraction (500 caractères):', texte.substring(0, 500));
+  
+  // Recherche du matricule dans différentes positions et formats
   const patterns = [
-    /MATR[\.\s]*(\d{1,3})/i,
-    /MATRICULE[\s:]*(\d{1,3})/i,
-    /MATR[\s]*[\.:]\s*(\d{1,3})/i,
-    /MATR\s+(\d{1,3})/i
+    // Pattern pour "MATE." suivi de chiffres (comme dans votre PDF)
+    /MATE\.\s*(\d{1,3})/i,
+    
+    // Pattern pour "MATR." suivi de chiffres
+    /MATR\.\s*(\d{1,3})/i,
+    
+    // Pattern pour "MATE" sans point
+    /MATE\s+(\d{1,3})/i,
+    
+    // Pattern pour "MATR" sans point
+    /MATR\s+(\d{1,3})/i,
+    
+    // Pattern pour la structure de tableau comme dans votre PDF
+    /\|\s*(\d{1,3})\s*\|\s*Messal\s+Majed/i,
+    
+    // Recherche plus générale de matricules dans un contexte tabulaire
+    /\|\s*(\d{1,3})\s*\|\s*[A-Z]/i,
+    
+    // Pattern pour "MATRICULE" complet
+    /MATRICULE[\s:]*(\d{1,3})/i
   ];
 
   for (const pattern of patterns) {
     const match = texte.match(pattern);
     if (match && match[1]) {
-      return match[1].trim();
+      const matricule = match[1].trim();
+      console.log(`✅ Matricule trouvé avec pattern ${pattern}: ${matricule}`);
+      return matricule;
     }
   }
+  
+  // Si aucun pattern ne fonctionne, chercher des nombres de 2-3 chiffres après "MATE" ou "MATR"
+  const lines = texte.split('\n');
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    
+    // Chercher "MATE" ou "MATR" dans la ligne
+    if (line.includes('MATE') || line.includes('MATR')) {
+      // Extraire tous les nombres de la ligne suivante
+      const nextLine = i + 1 < lines.length ? lines[i + 1] : '';
+      const numbers = nextLine.match(/\b(\d{2,3})\b/g);
+      
+      if (numbers && numbers.length > 0) {
+        console.log(`✅ Matricule trouvé dans ligne suivante: ${numbers[0]}`);
+        return numbers[0];
+      }
+    }
+  }
+  
+  console.log('⚠️ Aucun matricule trouvé dans le texte');
   return null;
 }
-
 // Route principale pour traiter les fiches de paie
 app.post(
   '/api/fiche-paie/process',
