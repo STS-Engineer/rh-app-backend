@@ -136,6 +136,41 @@ const upload = multer({
 });
 
 // =========================
+// Configuration pour photos employés
+// =========================
+
+const employeePhotoDir = path.join(__dirname, 'uploads', 'employee-photos');
+
+if (!fs.existsSync(employeePhotoDir)) {
+  fs.mkdirSync(employeePhotoDir, { recursive: true });
+  console.log(`📁 Dossier photos employés créé: ${employeePhotoDir}`);
+}
+
+const employeePhotoStorage = multer.diskStorage({
+  destination: function (req, file, cb) {
+    cb(null, employeePhotoDir);
+  },
+  filename: function (req, file, cb) {
+    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1e9);
+    cb(null, 'employee-' + uniqueSuffix + path.extname(file.originalname));
+  }
+});
+
+const employeePhotoUpload = multer({
+  storage: employeePhotoStorage,
+  limits: {
+    fileSize: 5 * 1024 * 1024 // 5MB max
+  },
+  fileFilter: function (req, file, cb) {
+    if (file.mimetype.startsWith('image/')) {
+      cb(null, true);
+    } else {
+      cb(new Error('Seules les images sont autorisées!'), false);
+    }
+  }
+});
+
+// =========================
 // Test connexion BDD
 // =========================
 
@@ -216,10 +251,109 @@ function getDefaultAvatar(nom, prenom) {
 }
 
 // =========================
+// Routes pour photos employés
+// =========================
+
+// Route pour uploader une photo d'employé
+app.post(
+  '/api/employees/upload-photo',
+  authenticateToken,
+  employeePhotoUpload.single('photo'),
+  async (req, res) => {
+    try {
+      console.log('📸 ========== UPLOAD PHOTO EMPLOYÉ ==========');
+      
+      if (!req.file) {
+        console.log('❌ Aucun fichier uploadé');
+        return res.status(400).json({ 
+          success: false, 
+          error: 'Aucun fichier uploadé' 
+        });
+      }
+
+      console.log('📁 Fichier reçu:', {
+        filename: req.file.filename,
+        originalname: req.file.originalname,
+        size: req.file.size,
+        mimetype: req.file.mimetype
+      });
+
+      // Renommer le fichier pour un nom plus propre
+      const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1e9);
+      const newFileName = `employee-photo-${uniqueSuffix}${path.extname(req.file.originalname)}`;
+      const newFilePath = path.join(employeePhotoDir, newFileName);
+      
+      // Déplacer le fichier du temp vers le dossier final
+      fs.renameSync(req.file.path, newFilePath);
+      
+      // Générer l'URL accessible
+      const baseUrl = process.env.BACKEND_URL || 'https://backend-rh.azurewebsites.net';
+      const photoUrl = `${baseUrl}/api/employee-photos/${newFileName}`;
+      
+      console.log('✅ Photo sauvegardée:', {
+        newFileName: newFileName,
+        photoUrl: photoUrl
+      });
+
+      res.json({
+        success: true,
+        message: 'Photo uploadée avec succès',
+        photoUrl: photoUrl,
+        fileName: newFileName
+      });
+
+    } catch (error) {
+      console.error('❌ Erreur upload photo employé:', error);
+      
+      res.status(500).json({
+        success: false,
+        error: "Erreur lors de l'upload de la photo",
+        details: error.message
+      });
+    }
+  }
+);
+
+// Route pour servir les photos d'employés
+app.get('/api/employee-photos/:filename', (req, res) => {
+  try {
+    const filename = req.params.filename;
+    const filePath = path.join(employeePhotoDir, filename);
+    
+    console.log('🖼️ Demande photo:', filename);
+    
+    if (!fs.existsSync(filePath)) {
+      console.error('❌ Photo non trouvée:', filePath);
+      return res.status(404).json({ error: 'Photo non trouvée' });
+    }
+
+    // Déterminer le type MIME
+    const ext = path.extname(filename).toLowerCase();
+    const mimeTypes = {
+      '.jpg': 'image/jpeg',
+      '.jpeg': 'image/jpeg',
+      '.png': 'image/png',
+      '.gif': 'image/gif',
+      '.webp': 'image/webp'
+    };
+    
+    const contentType = mimeTypes[ext] || 'application/octet-stream';
+    
+    res.setHeader('Content-Type', contentType);
+    res.setHeader('Cache-Control', 'public, max-age=86400'); // Cache 24h
+    res.sendFile(filePath);
+    
+  } catch (error) {
+    console.error('❌ Erreur service photo:', error);
+    res.status(500).json({ error: 'Erreur lors du chargement de la photo' });
+  }
+});
+
+// =========================
 // Routes Dossier RH
 // =========================
 
-// Upload des photos temporaires
+// Upload des photos temporaires pour dossier RH
 app.post(
   '/api/dossier-rh/upload-photos',
   authenticateToken,
@@ -487,155 +621,6 @@ app.get('/api/pdfs/:filename', (req, res) => {
   }
 });
 
-
-
-
-
-
-// =========================
-// Route upload photo employé (Même méthode que Dossier RH)
-// =========================
-
-// Configuration Multer pour photos employés
-const employeePhotoDir = path.join(__dirname, 'uploads', 'employee-photos');
-
-if (!fs.existsSync(employeePhotoDir)) {
-  fs.mkdirSync(employeePhotoDir, { recursive: true });
-  console.log(`📁 Dossier photos employés créé: ${employeePhotoDir}`);
-}
-
-const employeePhotoStorage = multer.diskStorage({
-  destination: function (req, file, cb) {
-    cb(null, employeePhotoDir);
-  },
-  filename: function (req, file, cb) {
-    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1e9);
-    cb(null, 'employee-' + uniqueSuffix + path.extname(file.originalname));
-  }
-});
-
-const employeePhotoUpload = multer({
-  storage: employeePhotoStorage,
-  limits: {
-    fileSize: 5 * 1024 * 1024 // 5MB max
-  },
-  fileFilter: function (req, file, cb) {
-    if (file.mimetype.startsWith('image/')) {
-      cb(null, true);
-    } else {
-      cb(new Error('Seules les images sont autorisées!'), false);
-    }
-  }
-});
-
-// Route pour uploader une photo et la stocker dans Azure
-app.post(
-  '/api/employees/upload-photo',
-  authenticateToken,
-  employeePhotoUpload.single('photo'),
-  async (req, res) => {
-    try {
-      console.log('📸 Upload photo employé reçu');
-      
-      if (!req.file) {
-        return res.status(400).json({ 
-          success: false, 
-          error: 'Aucun fichier uploadé' 
-        });
-      }
-
-      console.log('📁 Fichier temporaire reçu:', {
-        filename: req.file.filename,
-        originalname: req.file.originalname,
-        size: req.file.size,
-        path: req.file.path
-      });
-
-      // Lire le fichier temporaire
-      const fileBuffer = fs.readFileSync(req.file.path);
-      
-      // Upload vers Azure Blob Storage (même méthode que pour les PDF du dossier RH)
-      const fileName = `employee-photo-${Date.now()}.jpg`;
-      const azureUrl = await uploadPhotoToAzure(fileBuffer, fileName);
-      
-      // Supprimer le fichier temporaire local
-      fs.unlinkSync(req.file.path);
-      console.log('🧹 Fichier temporaire supprimé');
-
-      console.log('✅ Photo uploadée vers Azure:', azureUrl);
-
-      res.json({
-        success: true,
-        message: 'Photo uploadée avec succès',
-        photoUrl: azureUrl,
-        fileName: fileName
-      });
-
-    } catch (error) {
-      console.error('❌ Erreur upload photo employé:', error);
-      
-      // Nettoyer le fichier temporaire en cas d'erreur
-      if (req.file && req.file.path && fs.existsSync(req.file.path)) {
-        fs.unlinkSync(req.file.path);
-      }
-
-      res.status(500).json({
-        success: false,
-        error: "Erreur lors de l'upload de la photo",
-        details: error.message
-      });
-    }
-  }
-);
-
-// Fonction pour uploader vers Azure (même que pour les PDF)
-async function uploadPhotoToAzure(fileBuffer, fileName) {
-  try {
-    // Import dynamique pour éviter les problèmes de chargement
-    const { BlobServiceClient } = require('@azure/storage-blob');
-    
-    const connectionString = process.env.AZURE_STORAGE_CONNECTION_STRING;
-    const containerName = process.env.AZURE_STORAGE_CONTAINER_NAME || 'hr-app';
-    
-    if (!connectionString) {
-      throw new Error('AZURE_STORAGE_CONNECTION_STRING non configurée');
-    }
-
-    // Créer le client Azure
-    const blobServiceClient = BlobServiceClient.fromConnectionString(connectionString);
-    const containerClient = blobServiceClient.getContainerClient(containerName);
-    
-    // Créer le container s'il n'existe pas
-    await containerClient.createIfNotExists({ access: 'blob' });
-    
-    // Créer le nom unique pour le blob
-    const blobName = `employee-photos/${fileName}`;
-    const blockBlobClient = containerClient.getBlockBlobClient(blobName);
-    
-    // Upload vers Azure
-    console.log(`📤 Upload vers Azure: ${blobName} (${fileBuffer.length} bytes)`);
-    await blockBlobClient.upload(fileBuffer, fileBuffer.length, {
-      blobHTTPHeaders: { blobContentType: 'image/jpeg' }
-    });
-    
-    // Retourner l'URL publique
-    const blobUrl = blockBlobClient.url;
-    console.log(`✅ Upload réussi: ${blobUrl}`);
-    
-    return blobUrl;
-    
-  } catch (error) {
-    console.error('❌ Erreur upload vers Azure:', error);
-    throw error;
-  }
-}
-
-
-
-
-
-
-
 // =========================
 // Routes Fiche de Paie
 // =========================
@@ -678,30 +663,15 @@ const uploadPaie = multer({
 });
 
 // Fonction pour extraire le matricule d'une page PDF
-// Fonction pour extraire le matricule d'une page PDF - VERSION AMÉLIORÉE
 function extraireMatricule(texte) {
   console.log('🔍 Texte complet pour extraction (500 caractères):', texte.substring(0, 500));
   
-  // Recherche du matricule dans différentes positions et formats
   const patterns = [
-    // Pattern pour "MATE." suivi de chiffres (comme dans votre PDF)
     /MATE\.\s*(\d{1,3})/i,
-    
-    // Pattern pour "MATR." suivi de chiffres
     /MATR\.\s*(\d{1,3})/i,
-    
-    // Pattern pour "MATE" sans point
     /MATE\s+(\d{1,3})/i,
-    
-    // Pattern pour "MATR" sans point
     /MATR\s+(\d{1,3})/i,
-  
-  
-    
-    // Recherche plus générale de matricules dans un contexte tabulaire
     /\|\s*(\d{1,3})\s*\|\s*[A-Z]/i,
-    
-    // Pattern pour "MATRICULE" complet
     /MATRICULE[\s:]*(\d{1,3})/i
   ];
 
@@ -714,14 +684,11 @@ function extraireMatricule(texte) {
     }
   }
   
-  // Si aucun pattern ne fonctionne, chercher des nombres de 2-3 chiffres après "MATE" ou "MATR"
   const lines = texte.split('\n');
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
     
-    // Chercher "MATE" ou "MATR" dans la ligne
     if (line.includes('MATE') || line.includes('MATR')) {
-      // Extraire tous les nombres de la ligne suivante
       const nextLine = i + 1 < lines.length ? lines[i + 1] : '';
       const numbers = nextLine.match(/\b(\d{2,3})\b/g);
       
@@ -735,6 +702,7 @@ function extraireMatricule(texte) {
   console.log('⚠️ Aucun matricule trouvé dans le texte');
   return null;
 }
+
 // Route principale pour traiter les fiches de paie
 app.post(
   '/api/fiche-paie/process',
@@ -755,7 +723,6 @@ app.post(
     };
 
     try {
-      // Charger le PDF principal
       const pdfBytes = fs.readFileSync(pdfPath);
       const pdfDoc = await PDFDocument.load(pdfBytes);
       const totalPages = pdfDoc.getPageCount();
@@ -763,29 +730,24 @@ app.post(
       console.log(`📑 PDF chargé: ${totalPages} page(s)`);
       results.total = totalPages;
 
-      // Traiter chaque page
       for (let i = 0; i < totalPages; i++) {
         try {
           console.log(`\n🔍 Traitement page ${i + 1}/${totalPages}`);
           
-          // Créer un nouveau PDF avec une seule page
           const singlePagePdf = await PDFDocument.create();
           const [copiedPage] = await singlePagePdf.copyPages(pdfDoc, [i]);
           singlePagePdf.addPage(copiedPage);
           
-          // Sauvegarder temporairement pour extraire le texte
           const singlePageBytes = await singlePagePdf.save();
           const tempPath = path.join(uploadPaieDir, `temp-page-${i}.pdf`);
           fs.writeFileSync(tempPath, singlePageBytes);
           
-          // Extraire le texte de la page
           const dataBuffer = fs.readFileSync(tempPath);
           const pdfData = await pdfParse(dataBuffer);
           const texte = pdfData.text;
           
           console.log('📝 Extrait de texte (200 premiers caractères):', texte.substring(0, 200));
           
-          // Extraire le matricule
           const matricule = extraireMatricule(texte);
           
           if (!matricule) {
@@ -800,7 +762,6 @@ app.post(
           
           console.log(`✅ Matricule trouvé: ${matricule}`);
           
-          // Rechercher l'employé dans la base
           const employeResult = await pool.query(
             'SELECT * FROM employees WHERE matricule = $1',
             [matricule]
@@ -831,26 +792,22 @@ app.post(
             continue;
           }
           
-          // Nom du fichier final
           const fileName = `fiche-paie-${matricule}-${Date.now()}.pdf`;
           const finalPath = path.join(uploadPaieDir, fileName);
           
-          // Déplacer le fichier temporaire vers le nom final
           fs.renameSync(tempPath, finalPath);
           
-          // Envoyer l'email
           await envoyerFichePaieParEmail(employe, finalPath, fileName);
           
           console.log(`✅ Page ${i + 1}: Fiche de paie envoyée à ${employe.adresse_mail}`);
           results.success++;
           
-          // Nettoyer le fichier après envoi
           setTimeout(() => {
             if (fs.existsSync(finalPath)) {
               fs.unlinkSync(finalPath);
               console.log(`🧹 Fichier nettoyé: ${fileName}`);
             }
-          }, 60000); // Supprimer après 1 minute
+          }, 60000);
           
         } catch (pageError) {
           console.error(`❌ Erreur page ${i + 1}:`, pageError);
@@ -861,7 +818,6 @@ app.post(
         }
       }
       
-      // Nettoyer le fichier principal uploadé
       if (fs.existsSync(pdfPath)) {
         fs.unlinkSync(pdfPath);
         console.log('🧹 Fichier principal nettoyé');
@@ -878,7 +834,6 @@ app.post(
     } catch (error) {
       console.error('❌ Erreur traitement PDF:', error);
       
-      // Nettoyer en cas d'erreur
       if (fs.existsSync(pdfPath)) {
         fs.unlinkSync(pdfPath);
       }
@@ -943,7 +898,6 @@ async function envoyerFichePaieParEmail(employe, pdfPath, fileName) {
   }
 }
 
-
 // =========================
 // ROUTES RH
 // =========================
@@ -964,6 +918,8 @@ app.get('/', (req, res) => {
       'PUT  /api/employees/:id',
       'PUT  /api/employees/:id/archive',
       'POST /api/employees',
+      'POST /api/employees/upload-photo', // NOUVEAU
+      'GET  /api/employee-photos/:filename', // NOUVEAU
       'GET  /api/demandes',
       'GET  /api/demandes/:id',
       'POST /api/demandes',
@@ -1367,7 +1323,7 @@ app.post('/api/employees', authenticateToken, async (req, res) => {
 
     let photoUrl = photo;
     if (!photoUrl) {
-      photoUrl = `https://ui-avatars.com/api/?name=${prenom}+${nom}&background=3498db&color=fff&size=150`;
+      photoUrl = getDefaultAvatar(nom, prenom);
     }
 
     const result = await pool.query(
@@ -1683,34 +1639,26 @@ app.put('/api/demandes/:id', authenticateToken, async (req, res) => {
       commentaire_refus
     } = req.body;
 
-    // Logique de statut automatique CORRIGÉE
     let finalStatut = statut;
     
     if (approuve_responsable1 === false || approuve_responsable2 === false) {
-      // Si un des responsables refuse, la demande est refusée
       finalStatut = 'refuse';
     } else if (approuve_responsable1 === true && approuve_responsable2 === true) {
-      // Si les deux responsables approuvent, la demande est approuvée
       finalStatut = 'approuve';
     } else if (approuve_responsable1 === true && !approuve_responsable2) {
-      // Si seulement le responsable 1 a approuvé
       const employeeResult = await pool.query(
         'SELECT mail_responsable2 FROM employees WHERE id = (SELECT employe_id FROM demande_rh WHERE id = $1)',
         [id]
       );
       
       if (employeeResult.rows.length > 0 && !employeeResult.rows[0].mail_responsable2) {
-        // Si pas de deuxième responsable, la demande est approuvée
         finalStatut = 'approuve';
       } else {
-        // Sinon, en attente du deuxième responsable
         finalStatut = 'en_attente';
       }
     } else if (approuve_responsable2 === true && !approuve_responsable1) {
-      // Si seulement le responsable 2 a approuvé, en attente du premier
       finalStatut = 'en_attente';
     } else {
-      // Par défaut, en attente
       finalStatut = finalStatut || 'en_attente';
     }
 
@@ -1777,7 +1725,7 @@ app.put('/api/demandes/:id/statut', authenticateToken, async (req, res) => {
     );
 
     if (result.rows.length === 0) {
-      return res.status(404).json({ error: 'Demande non trouvée' });
+      return res.status(404).json({ error: 'Demande non trouvé' });
     }
 
     console.log('✅ Statut demande mis à jour');
@@ -1851,7 +1799,7 @@ app.listen(PORT, () => {
   console.log(`🗄️  Base: ${process.env.DB_NAME} @ ${process.env.DB_HOST}`);
   console.log(`🔐 JWT: ${process.env.JWT_SECRET ? '✅' : '⚠️'}`);
   console.log(`🌍 ENV: ${process.env.NODE_ENV || 'development'}`);
-  console.log('📋 Routes dossier RH avec stockage local activées');
+  console.log('📁 Dossier photos employés:', employeePhotoDir);
   console.log('📁 Dossier PDFs:', pdfStorageDir);
   console.log('='.repeat(60) + '\n');
 });
