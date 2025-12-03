@@ -488,6 +488,154 @@ app.get('/api/pdfs/:filename', (req, res) => {
 });
 
 
+
+
+
+
+// =========================
+// Route upload photo employé (Même méthode que Dossier RH)
+// =========================
+
+// Configuration Multer pour photos employés
+const employeePhotoDir = path.join(__dirname, 'uploads', 'employee-photos');
+
+if (!fs.existsSync(employeePhotoDir)) {
+  fs.mkdirSync(employeePhotoDir, { recursive: true });
+  console.log(`📁 Dossier photos employés créé: ${employeePhotoDir}`);
+}
+
+const employeePhotoStorage = multer.diskStorage({
+  destination: function (req, file, cb) {
+    cb(null, employeePhotoDir);
+  },
+  filename: function (req, file, cb) {
+    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1e9);
+    cb(null, 'employee-' + uniqueSuffix + path.extname(file.originalname));
+  }
+});
+
+const employeePhotoUpload = multer({
+  storage: employeePhotoStorage,
+  limits: {
+    fileSize: 5 * 1024 * 1024 // 5MB max
+  },
+  fileFilter: function (req, file, cb) {
+    if (file.mimetype.startsWith('image/')) {
+      cb(null, true);
+    } else {
+      cb(new Error('Seules les images sont autorisées!'), false);
+    }
+  }
+});
+
+// Route pour uploader une photo et la stocker dans Azure
+app.post(
+  '/api/employees/upload-photo',
+  authenticateToken,
+  employeePhotoUpload.single('photo'),
+  async (req, res) => {
+    try {
+      console.log('📸 Upload photo employé reçu');
+      
+      if (!req.file) {
+        return res.status(400).json({ 
+          success: false, 
+          error: 'Aucun fichier uploadé' 
+        });
+      }
+
+      console.log('📁 Fichier temporaire reçu:', {
+        filename: req.file.filename,
+        originalname: req.file.originalname,
+        size: req.file.size,
+        path: req.file.path
+      });
+
+      // Lire le fichier temporaire
+      const fileBuffer = fs.readFileSync(req.file.path);
+      
+      // Upload vers Azure Blob Storage (même méthode que pour les PDF du dossier RH)
+      const fileName = `employee-photo-${Date.now()}.jpg`;
+      const azureUrl = await uploadPhotoToAzure(fileBuffer, fileName);
+      
+      // Supprimer le fichier temporaire local
+      fs.unlinkSync(req.file.path);
+      console.log('🧹 Fichier temporaire supprimé');
+
+      console.log('✅ Photo uploadée vers Azure:', azureUrl);
+
+      res.json({
+        success: true,
+        message: 'Photo uploadée avec succès',
+        photoUrl: azureUrl,
+        fileName: fileName
+      });
+
+    } catch (error) {
+      console.error('❌ Erreur upload photo employé:', error);
+      
+      // Nettoyer le fichier temporaire en cas d'erreur
+      if (req.file && req.file.path && fs.existsSync(req.file.path)) {
+        fs.unlinkSync(req.file.path);
+      }
+
+      res.status(500).json({
+        success: false,
+        error: "Erreur lors de l'upload de la photo",
+        details: error.message
+      });
+    }
+  }
+);
+
+// Fonction pour uploader vers Azure (même que pour les PDF)
+async function uploadPhotoToAzure(fileBuffer, fileName) {
+  try {
+    // Import dynamique pour éviter les problèmes de chargement
+    const { BlobServiceClient } = require('@azure/storage-blob');
+    
+    const connectionString = process.env.AZURE_STORAGE_CONNECTION_STRING;
+    const containerName = process.env.AZURE_STORAGE_CONTAINER_NAME || 'hr-app';
+    
+    if (!connectionString) {
+      throw new Error('AZURE_STORAGE_CONNECTION_STRING non configurée');
+    }
+
+    // Créer le client Azure
+    const blobServiceClient = BlobServiceClient.fromConnectionString(connectionString);
+    const containerClient = blobServiceClient.getContainerClient(containerName);
+    
+    // Créer le container s'il n'existe pas
+    await containerClient.createIfNotExists({ access: 'blob' });
+    
+    // Créer le nom unique pour le blob
+    const blobName = `employee-photos/${fileName}`;
+    const blockBlobClient = containerClient.getBlockBlobClient(blobName);
+    
+    // Upload vers Azure
+    console.log(`📤 Upload vers Azure: ${blobName} (${fileBuffer.length} bytes)`);
+    await blockBlobClient.upload(fileBuffer, fileBuffer.length, {
+      blobHTTPHeaders: { blobContentType: 'image/jpeg' }
+    });
+    
+    // Retourner l'URL publique
+    const blobUrl = blockBlobClient.url;
+    console.log(`✅ Upload réussi: ${blobUrl}`);
+    
+    return blobUrl;
+    
+  } catch (error) {
+    console.error('❌ Erreur upload vers Azure:', error);
+    throw error;
+  }
+}
+
+
+
+
+
+
+
 // =========================
 // Routes Fiche de Paie
 // =========================
