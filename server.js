@@ -1379,7 +1379,7 @@ app.post('/api/employees', authenticateToken, async (req, res) => {
 });
 
 // =========================
-// Routes Demandes RH
+// Routes Demandes RH - CORRIGÉES
 // =========================
 
 app.get('/api/demandes', authenticateToken, async (req, res) => {
@@ -1403,7 +1403,7 @@ app.get('/api/demandes', authenticateToken, async (req, res) => {
       employe_id
     });
 
-    // REQUÊTE CORRIGÉE - Pas de doublons
+    // REQUÊTE CORRIGÉE
     let query = `
       SELECT 
         d.*,
@@ -1422,11 +1422,13 @@ app.get('/api/demandes', authenticateToken, async (req, res) => {
     const params = [];
     let paramCount = 0;
 
+    // CORRECTION : Gestion améliorée du filtre type_demande
     if (type_demande && type_demande !== '' && type_demande !== 'undefined') {
       paramCount++;
-      query += ` AND d.type_demande = $${paramCount}`;
-      params.push(type_demande);
-      console.log(`✅ Filtre type_demande: ${type_demande}`);
+      // Utilisation de ILIKE pour insensibilité à la casse
+      query += ` AND LOWER(TRIM(d.type_demande)) = LOWER($${paramCount})`;
+      params.push(type_demande.trim());
+      console.log(`✅ Filtre type_demande appliqué: "${type_demande}"`);
     }
 
     if (statut && statut !== '' && statut !== 'undefined') {
@@ -1459,8 +1461,21 @@ app.get('/api/demandes', authenticateToken, async (req, res) => {
 
     query += ` ORDER BY d.created_at DESC`;
     
-    console.log('📝 Requête SQL (sans responsables):', query);
+    console.log('📝 Requête SQL finale:', query);
     console.log('📝 Paramètres:', params);
+
+    // DEBUG : Vérifier les valeurs distinctes en base
+    try {
+      const debugResult = await pool.query(`
+        SELECT DISTINCT type_demande, COUNT(*) as count 
+        FROM demande_rh 
+        GROUP BY type_demande 
+        ORDER BY type_demande
+      `);
+      console.log('🔍 Valeurs distinctes type_demande en base:', debugResult.rows);
+    } catch (debugErr) {
+      console.log('⚠️ Erreur debug:', debugErr.message);
+    }
 
     // Exécuter la requête principale
     const result = await pool.query(query, params);
@@ -1517,8 +1532,8 @@ app.get('/api/demandes', authenticateToken, async (req, res) => {
 
     if (type_demande && type_demande !== '' && type_demande !== 'undefined') {
       countParamCount++;
-      countQuery += ` AND d.type_demande = $${countParamCount}`;
-      countParams.push(type_demande);
+      countQuery += ` AND LOWER(TRIM(d.type_demande)) = LOWER($${countParamCount})`;
+      countParams.push(type_demande.trim());
     }
 
     if (statut && statut !== '' && statut !== 'undefined') {
@@ -1568,6 +1583,40 @@ app.get('/api/demandes', authenticateToken, async (req, res) => {
     });
   }
 });
+
+// Route de debug pour tester les filtres
+app.get('/api/debug/demandes-filtres', authenticateToken, async (req, res) => {
+  try {
+    const { type_demande } = req.query;
+    
+    console.log('🔍 Debug - Test filtre type_demande:', type_demande);
+    
+    // Vérifier les valeurs en base
+    const distinctResult = await pool.query(`
+      SELECT DISTINCT type_demande, COUNT(*) as count 
+      FROM demande_rh 
+      GROUP BY type_demande 
+      ORDER BY type_demande
+    `);
+    
+    // Tester la requête avec le filtre
+    const testResult = await pool.query(
+      `SELECT id, type_demande, titre, statut FROM demande_rh WHERE LOWER(TRIM(type_demande)) = LOWER($1)`,
+      [type_demande ? type_demande.trim() : '']
+    );
+    
+    res.json({
+      recherche: type_demande,
+      valeurs_distinctes_en_base: distinctResult.rows,
+      resultats_filtre: testResult.rows,
+      count: testResult.rows.length,
+      query_test: `SELECT * FROM demande_rh WHERE LOWER(TRIM(type_demande)) = LOWER('${type_demande || ''}')`
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 app.get('/api/demandes/:id', authenticateToken, async (req, res) => {
   try {
     const { id } = req.params;
