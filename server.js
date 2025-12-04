@@ -97,19 +97,53 @@ app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
 // =========================
-// Configuration Multer upload (Dossier RH)
+// Configuration des dossiers
 // =========================
 
 const uploadTempDir = path.join(__dirname, 'uploads', 'temp');
 const pdfStorageDir = path.join(__dirname, 'uploads', 'pdfs');
+const employeePhotoDir = path.join(__dirname, 'uploads', 'employee-photos');
+const archivePdfDir = path.join(__dirname, 'uploads', 'archive-pdfs');
 
 // Créer les dossiers s'ils n'existent pas
-[uploadTempDir, pdfStorageDir].forEach(dir => {
+[uploadTempDir, pdfStorageDir, employeePhotoDir, archivePdfDir].forEach(dir => {
   if (!fs.existsSync(dir)) {
     fs.mkdirSync(dir, { recursive: true });
     console.log(`📁 Dossier créé: ${dir}`);
   }
 });
+
+// =========================
+// Configuration Multer pour les PDF d'archive
+// =========================
+
+const archivePdfStorage = multer.diskStorage({
+  destination: function (req, file, cb) {
+    cb(null, archivePdfDir);
+  },
+  filename: function (req, file, cb) {
+    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1e9);
+    cb(null, 'archive-' + uniqueSuffix + '.pdf');
+  }
+});
+
+const archivePdfUpload = multer({
+  storage: archivePdfStorage,
+  limits: {
+    fileSize: 50 * 1024 * 1024 // 50MB max
+  },
+  fileFilter: function (req, file, cb) {
+    if (file.mimetype === 'application/pdf') {
+      cb(null, true);
+    } else {
+      cb(new Error('Seuls les fichiers PDF sont autorisés!'), false);
+    }
+  }
+});
+
+// =========================
+// Configuration Multer upload (Dossier RH)
+// =========================
 
 const storage = multer.diskStorage({
   destination: function (req, file, cb) {
@@ -138,13 +172,6 @@ const upload = multer({
 // =========================
 // Configuration pour photos employés
 // =========================
-
-const employeePhotoDir = path.join(__dirname, 'uploads', 'employee-photos');
-
-if (!fs.existsSync(employeePhotoDir)) {
-  fs.mkdirSync(employeePhotoDir, { recursive: true });
-  console.log(`📁 Dossier photos employés créé: ${employeePhotoDir}`);
-}
 
 const employeePhotoStorage = multer.diskStorage({
   destination: function (req, file, cb) {
@@ -249,6 +276,133 @@ function getDefaultAvatar(nom, prenom) {
   const color = colors[Math.floor(Math.random() * colors.length)];
   return `https://ui-avatars.com/api/?name=${initiales}&background=${color}&color=fff&size=150`;
 }
+
+// =========================
+// NOUVELLES ROUTES POUR ARCHIVES PDF
+// =========================
+
+// Route pour uploader un PDF d'archive
+app.post(
+  '/api/archive/upload-pdf',
+  authenticateToken,
+  archivePdfUpload.single('pdfFile'),
+  async (req, res) => {
+    try {
+      console.log('📄 ========== UPLOAD PDF ARCHIVE ==========');
+      
+      if (!req.file) {
+        console.log('❌ Aucun fichier PDF uploadé');
+        return res.status(400).json({ 
+          success: false, 
+          error: 'Aucun fichier PDF uploadé' 
+        });
+      }
+
+      console.log('📁 Fichier PDF reçu:', {
+        filename: req.file.filename,
+        originalname: req.file.originalname,
+        size: req.file.size,
+        mimetype: req.file.mimetype
+      });
+
+      // Générer l'URL accessible
+      const baseUrl = process.env.BACKEND_URL || 'https://backend-rh.azurewebsites.net';
+      const pdfUrl = `${baseUrl}/api/archive-pdfs/${req.file.filename}`;
+      
+      console.log('✅ PDF sauvegardé:', {
+        fileName: req.file.filename,
+        pdfUrl: pdfUrl
+      });
+
+      res.json({
+        success: true,
+        message: 'PDF uploadé avec succès',
+        pdfUrl: pdfUrl,
+        fileName: req.file.filename
+      });
+
+    } catch (error) {
+      console.error('❌ Erreur upload PDF archive:', error);
+      
+      res.status(500).json({
+        success: false,
+        error: "Erreur lors de l'upload du PDF",
+        details: error.message
+      });
+    }
+  }
+);
+
+// Route pour servir les PDF d'archive
+app.get('/api/archive-pdfs/:filename', (req, res) => {
+  try {
+    const filename = req.params.filename;
+    const filePath = path.join(archivePdfDir, filename);
+    
+    console.log('📄 Demande PDF archive:', filename);
+    
+    if (!fs.existsSync(filePath)) {
+      console.error('❌ PDF non trouvé:', filePath);
+      return res.status(404).json({ error: 'PDF non trouvé' });
+    }
+
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `inline; filename="${filename}"`);
+    res.sendFile(filePath);
+    
+  } catch (error) {
+    console.error('❌ Erreur service PDF archive:', error);
+    res.status(500).json({ error: 'Erreur lors du chargement du PDF' });
+  }
+});
+
+// =========================
+// Mise à jour de la route d'archivage pour utiliser les PDF uploadés
+// =========================
+
+app.put('/api/employees/:id/archive', authenticateToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { pdf_url, entretien_depart } = req.body;
+
+    console.log('📁 Archivage employé ID:', id, 'avec PDF:', pdf_url);
+
+    if (!pdf_url) {
+      return res.status(400).json({
+        error: 'Le lien PDF de l\'entretien de départ est obligatoire'
+      });
+    }
+
+    const result = await pool.query(
+      `
+      UPDATE employees 
+      SET date_depart = CURRENT_DATE, 
+          entretien_depart = $1,
+          pdf_archive_url = $2,
+          statut = 'archive',
+          updated_at = CURRENT_TIMESTAMP
+      WHERE id = $3
+      RETURNING *
+    `,
+      [entretien_depart || 'Entretien de départ terminé', pdf_url, id]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({
+        error: 'Employé non trouvé'
+      });
+    }
+
+    console.log('✅ Employé archivé avec PDF');
+    res.json(result.rows[0]);
+  } catch (error) {
+    console.error("❌ Erreur archivage:", error);
+    res.status(500).json({
+      error: "Erreur lors de l'archivage de l'employé",
+      message: error.message
+    });
+  }
+});
 
 // =========================
 // Routes pour photos employés
@@ -918,8 +1072,10 @@ app.get('/', (req, res) => {
       'PUT  /api/employees/:id',
       'PUT  /api/employees/:id/archive',
       'POST /api/employees',
-      'POST /api/employees/upload-photo', // NOUVEAU
-      'GET  /api/employee-photos/:filename', // NOUVEAU
+      'POST /api/employees/upload-photo',
+      'GET  /api/employee-photos/:filename',
+      'POST /api/archive/upload-pdf', // NOUVEAU
+      'GET  /api/archive-pdfs/:filename', // NOUVEAU
       'GET  /api/demandes',
       'GET  /api/demandes/:id',
       'POST /api/demandes',
@@ -1192,7 +1348,8 @@ app.put('/api/employees/:id', authenticateToken, async (req, res) => {
       salaire_brute,
       photo,
       dossier_rh,
-      date_depart
+      date_depart,
+      pdf_archive_url
     } = req.body;
 
     let photoUrl = photo;
@@ -1208,8 +1365,8 @@ app.put('/api/employees/:id', authenticateToken, async (req, res) => {
       SET matricule = $1, nom = $2, prenom = $3, cin = $4, passeport = $5,
           date_naissance = $6, poste = $7, site_dep = $8, type_contrat = $9,
           date_debut = $10, salaire_brute = $11, photo = $12, dossier_rh = $13,
-          date_depart = $14, updated_at = CURRENT_TIMESTAMP
-      WHERE id = $15
+          date_depart = $14, pdf_archive_url = $15, updated_at = CURRENT_TIMESTAMP
+      WHERE id = $16
       RETURNING *
     `,
       [
@@ -1227,6 +1384,7 @@ app.put('/api/employees/:id', authenticateToken, async (req, res) => {
         photoUrl,
         dossier_rh,
         date_depart,
+        pdf_archive_url,
         id
       ]
     );
@@ -1243,43 +1401,6 @@ app.put('/api/employees/:id', authenticateToken, async (req, res) => {
     console.error('❌ Erreur mise à jour employé:', error);
     res.status(500).json({
       error: "Erreur lors de la mise à jour de l'employé",
-      message: error.message
-    });
-  }
-});
-
-app.put('/api/employees/:id/archive', authenticateToken, async (req, res) => {
-  try {
-    const { id } = req.params;
-    const { entretien_depart } = req.body;
-
-    console.log('📁 Archivage employé ID:', id);
-
-    const result = await pool.query(
-      `
-      UPDATE employees 
-      SET date_depart = CURRENT_DATE, 
-          entretien_depart = $1,
-          statut = 'archive',
-          updated_at = CURRENT_TIMESTAMP
-      WHERE id = $2
-      RETURNING *
-    `,
-      [entretien_depart, id]
-    );
-
-    if (result.rows.length === 0) {
-      return res.status(404).json({
-        error: 'Employé non trouvé'
-      });
-    }
-
-    console.log('✅ Employé archivé');
-    res.json(result.rows[0]);
-  } catch (error) {
-    console.error("❌ Erreur archivage:", error);
-    res.status(500).json({
-      error: "Erreur lors de l'archivage de l'employé",
       message: error.message
     });
   }
@@ -1906,6 +2027,7 @@ app.listen(PORT, () => {
   console.log(`🌍 ENV: ${process.env.NODE_ENV || 'development'}`);
   console.log('📁 Dossier photos employés:', employeePhotoDir);
   console.log('📁 Dossier PDFs:', pdfStorageDir);
+  console.log('📁 Dossier Archive PDFs:', archivePdfDir); // NOUVEAU
   console.log('='.repeat(60) + '\n');
 });
 
