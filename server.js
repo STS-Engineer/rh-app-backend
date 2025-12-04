@@ -1423,69 +1423,92 @@ app.get('/api/demandes', authenticateToken, async (req, res) => {
       LEFT JOIN employees r2 ON e.mail_responsable2 = r2.adresse_mail
       WHERE 1=1
     `;
+    
     const params = [];
     let paramCount = 0;
 
-    if (type_demande) {
+    if (type_demande && type_demande !== '') {
       paramCount++;
       query += ` AND d.type_demande = $${paramCount}`;
       params.push(type_demande);
+      console.log(`✅ Filtre type_demande: ${type_demande}`);
     }
 
-    if (statut) {
+    if (statut && statut !== '') {
       paramCount++;
       query += ` AND d.statut = $${paramCount}`;
       params.push(statut);
+      console.log(`✅ Filtre statut: ${statut}`);
     }
 
-    if (employe_id) {
+    if (employe_id && employe_id !== '') {
       paramCount++;
       query += ` AND d.employe_id = $${paramCount}`;
       params.push(employe_id);
+      console.log(`✅ Filtre employe_id: ${employe_id}`);
     }
 
-    if (date_debut && date_fin) {
+    // CORRECTION: Traiter date_debut et date_fin séparément
+    if (date_debut && date_debut !== '') {
       paramCount++;
-      query += ` AND d.date_depart BETWEEN $${paramCount}`;
+      query += ` AND d.date_depart >= $${paramCount}`;
       params.push(date_debut);
-      paramCount++;
-      query += ` AND $${paramCount}`;
-      params.push(date_fin);
+      console.log(`✅ Filtre date_debut: ${date_debut}`);
     }
 
-    query += ` ORDER BY d.created_at DESC LIMIT $${paramCount + 1} OFFSET $${paramCount + 2}`;
-    params.push(parseInt(limit), (parseInt(page) - 1) * parseInt(limit));
+    if (date_fin && date_fin !== '') {
+      paramCount++;
+      query += ` AND d.date_depart <= $${paramCount}`;
+      params.push(date_fin);
+      console.log(`✅ Filtre date_fin: ${date_fin}`);
+    }
+
+    query += ` ORDER BY d.created_at DESC`;
+    
+    // Ajout de la pagination
+    if (limit && limit !== 'all') {
+      const offset = (parseInt(page) - 1) * parseInt(limit);
+      query += ` LIMIT $${paramCount + 1} OFFSET $${paramCount + 2}`;
+      params.push(parseInt(limit), offset);
+    }
+
+    console.log('📝 Requête SQL:', query);
+    console.log('📝 Paramètres:', params);
 
     const result = await pool.query(query, params);
 
+    // Requête pour le comptage total
     let countQuery = `SELECT COUNT(*) FROM demande_rh d WHERE 1=1`;
     const countParams = [];
     let countParamCount = 0;
 
-    if (type_demande) {
+    if (type_demande && type_demande !== '') {
       countParamCount++;
       countQuery += ` AND d.type_demande = $${countParamCount}`;
       countParams.push(type_demande);
     }
 
-    if (statut) {
+    if (statut && statut !== '') {
       countParamCount++;
       countQuery += ` AND d.statut = $${countParamCount}`;
       countParams.push(statut);
     }
 
-    if (employe_id) {
+    if (employe_id && employe_id !== '') {
       countParamCount++;
       countQuery += ` AND d.employe_id = $${countParamCount}`;
       countParams.push(employe_id);
     }
 
-    if (date_debut && date_fin) {
+    if (date_debut && date_debut !== '') {
       countParamCount++;
-      countQuery += ` AND d.date_depart BETWEEN $${countParamCount}`;
+      countQuery += ` AND d.date_depart >= $${countParamCount}`;
       countParams.push(date_debut);
+    }
+
+    if (date_fin && date_fin !== '') {
       countParamCount++;
-      countQuery += ` AND $${countParamCount}`;
+      countQuery += ` AND d.date_depart <= $${countParamCount}`;
       countParams.push(date_fin);
     }
 
@@ -1498,20 +1521,20 @@ app.get('/api/demandes', authenticateToken, async (req, res) => {
       demandes: result.rows,
       pagination: {
         page: parseInt(page),
-        limit: parseInt(limit),
+        limit: limit === 'all' ? total : parseInt(limit),
         total,
-        pages: Math.ceil(total / limit)
+        pages: limit === 'all' ? 1 : Math.ceil(total / limit)
       }
     });
   } catch (error) {
     console.error('❌ Erreur récupération demandes:', error);
     res.status(500).json({
       error: 'Erreur lors de la récupération des demandes',
-      message: error.message
+      message: error.message,
+      stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
     });
   }
 });
-
 app.get('/api/demandes/:id', authenticateToken, async (req, res) => {
   try {
     const { id } = req.params;
