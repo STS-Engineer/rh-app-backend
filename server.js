@@ -1392,43 +1392,36 @@ app.get('/api/demandes', authenticateToken, async (req, res) => {
       employe_id,
       page = 1,
       limit = 1000,
-      _t // timestamp pour éviter le cache
+      _t
     } = req.query;
 
-    console.log('📋 Récupération des demandes RH avec filtres:', {
+    console.log('📋 Récupération demandes avec filtres:', {
       type_demande,
       statut,
       date_debut,
       date_fin,
-      employe_id,
-      page,
-      limit
+      employe_id
     });
 
+    // REQUÊTE CORRIGÉE - Pas de doublons
     let query = `
-      SELECT d.*, 
-             e.nom as employe_nom, 
-             e.prenom as employe_prenom,
-             e.poste as employe_poste,
-             e.photo as employe_photo,
-             e.matricule as employe_matricule,
-             e.mail_responsable1,
-             e.mail_responsable2,
-             r1.nom as responsable1_nom,
-             r1.prenom as responsable1_prenom,
-             r2.nom as responsable2_nom,
-             r2.prenom as responsable2_prenom
+      SELECT 
+        d.*,
+        e.nom as employe_nom, 
+        e.prenom as employe_prenom,
+        e.poste as employe_poste,
+        e.photo as employe_photo,
+        e.matricule as employe_matricule,
+        e.mail_responsable1,
+        e.mail_responsable2
       FROM demande_rh d
       LEFT JOIN employees e ON d.employe_id = e.id
-      LEFT JOIN employees r1 ON e.mail_responsable1 = r1.adresse_mail
-      LEFT JOIN employees r2 ON e.mail_responsable2 = r2.adresse_mail
       WHERE 1=1
     `;
     
     const params = [];
     let paramCount = 0;
 
-    // CORRECTION: Vérifier explicitement les valeurs
     if (type_demande && type_demande !== '' && type_demande !== 'undefined') {
       paramCount++;
       query += ` AND d.type_demande = $${paramCount}`;
@@ -1450,7 +1443,6 @@ app.get('/api/demandes', authenticateToken, async (req, res) => {
       console.log(`✅ Filtre employe_id: ${employe_id}`);
     }
 
-    // CORRECTION CRITIQUE: Traiter les dates séparément
     if (date_debut && date_debut !== '' && date_debut !== 'undefined') {
       paramCount++;
       query += ` AND d.date_depart >= $${paramCount}`;
@@ -1465,27 +1457,60 @@ app.get('/api/demandes', authenticateToken, async (req, res) => {
       console.log(`✅ Filtre date_fin: ${date_fin}`);
     }
 
-    // Toujours trier par date de création décroissante
     query += ` ORDER BY d.created_at DESC`;
     
-    // Ajout de la pagination si spécifiée
-    if (limit && limit !== 'all' && limit !== 'undefined') {
-      const offset = (parseInt(page) - 1) * parseInt(limit);
-      paramCount++;
-      query += ` LIMIT $${paramCount}`;
-      params.push(parseInt(limit));
-      
-      paramCount++;
-      query += ` OFFSET $${paramCount}`;
-      params.push(offset);
-    }
-
-    console.log('📝 Requête SQL finale:', query);
+    console.log('📝 Requête SQL (sans responsables):', query);
     console.log('📝 Paramètres:', params);
 
+    // Exécuter la requête principale
     const result = await pool.query(query, params);
+    
+    console.log(`📊 Résultats de base: ${result.rows.length} demandes`);
+    
+    // Récupérer les informations des responsables séparément
+    const demandesAvecResponsables = await Promise.all(
+      result.rows.map(async (demande) => {
+        // Récupérer responsable 1
+        let responsable1_nom = null;
+        let responsable1_prenom = null;
+        
+        if (demande.mail_responsable1) {
+          const resp1Result = await pool.query(
+            'SELECT nom, prenom FROM employees WHERE adresse_mail = $1 LIMIT 1',
+            [demande.mail_responsable1]
+          );
+          if (resp1Result.rows.length > 0) {
+            responsable1_nom = resp1Result.rows[0].nom;
+            responsable1_prenom = resp1Result.rows[0].prenom;
+          }
+        }
+        
+        // Récupérer responsable 2
+        let responsable2_nom = null;
+        let responsable2_prenom = null;
+        
+        if (demande.mail_responsable2) {
+          const resp2Result = await pool.query(
+            'SELECT nom, prenom FROM employees WHERE adresse_mail = $1 LIMIT 1',
+            [demande.mail_responsable2]
+          );
+          if (resp2Result.rows.length > 0) {
+            responsable2_nom = resp2Result.rows[0].nom;
+            responsable2_prenom = resp2Result.rows[0].prenom;
+          }
+        }
+        
+        return {
+          ...demande,
+          responsable1_nom,
+          responsable1_prenom,
+          responsable2_nom,
+          responsable2_prenom
+        };
+      })
+    );
 
-    // Requête pour le comptage total (sans pagination)
+    // Requête de comptage
     let countQuery = `SELECT COUNT(*) as total_count FROM demande_rh d WHERE 1=1`;
     const countParams = [];
     let countParamCount = 0;
@@ -1500,12 +1525,6 @@ app.get('/api/demandes', authenticateToken, async (req, res) => {
       countParamCount++;
       countQuery += ` AND d.statut = $${countParamCount}`;
       countParams.push(statut);
-    }
-
-    if (employe_id && employe_id !== '' && employe_id !== 'undefined') {
-      countParamCount++;
-      countQuery += ` AND d.employe_id = $${countParamCount}`;
-      countParams.push(employe_id);
     }
 
     if (date_debut && date_debut !== '' && date_debut !== 'undefined') {
@@ -1523,24 +1542,25 @@ app.get('/api/demandes', authenticateToken, async (req, res) => {
     const countResult = await pool.query(countQuery, countParams);
     const total = parseInt(countResult.rows[0]?.total_count || 0);
 
-    console.log(`✅ Résultats: ${result.rows.length} demandes récupérées sur ${total} total`);
+    console.log(`✅ Résultats finaux: ${demandesAvecResponsables.length} demandes sur ${total} total en base`);
 
     res.json({
       success: true,
-      demandes: result.rows,
+      demandes: demandesAvecResponsables,
       pagination: {
         page: parseInt(page),
         limit: limit && limit !== 'all' ? parseInt(limit) : total,
         total,
         pages: limit && limit !== 'all' ? Math.ceil(total / parseInt(limit)) : 1
+      },
+      debug: {
+        countInBase: total,
+        countReturned: demandesAvecResponsables.length,
+        hasDuplicates: demandesAvecResponsables.length !== total
       }
     });
   } catch (error) {
-    console.error('❌ Erreur récupération demandes:', {
-      message: error.message,
-      stack: error.stack,
-      query: error.query
-    });
+    console.error('❌ Erreur récupération demandes:', error);
     res.status(500).json({
       success: false,
       error: 'Erreur lors de la récupération des demandes',
