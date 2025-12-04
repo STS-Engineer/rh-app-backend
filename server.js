@@ -1803,6 +1803,199 @@ app.delete('/api/demandes/:id', authenticateToken, async (req, res) => {
   }
 });
 
+
+// Ajoutez cette nouvelle route pour les filtres avancés AVANT la route existante /api/demandes
+app.get('/api/demandes/filter', authenticateToken, async (req, res) => {
+  try {
+    const {
+      type_demande,
+      statut,
+      type_conge,
+      date_debut,
+      date_fin,
+      employe_id,
+      page = 1,
+      limit = 1000
+    } = req.query;
+
+    console.log('🔍 Filtres avancés reçus:', {
+      type_demande,
+      statut,
+      type_conge,
+      date_debut,
+      date_fin,
+      employe_id
+    });
+
+    let query = `
+      SELECT d.*, 
+             e.nom as employe_nom, 
+             e.prenom as employe_prenom,
+             e.poste as employe_poste,
+             e.photo as employe_photo,
+             e.matricule as employe_matricule,
+             e.mail_responsable1,
+             e.mail_responsable2,
+             r1.nom as responsable1_nom,
+             r1.prenom as responsable1_prenom,
+             r2.nom as responsable2_nom,
+             r2.prenom as responsable2_prenom
+      FROM demande_rh d
+      LEFT JOIN employees e ON d.employe_id = e.id
+      LEFT JOIN employees r1 ON e.mail_responsable1 = r1.adresse_mail
+      LEFT JOIN employees r2 ON e.mail_responsable2 = r2.adresse_mail
+      WHERE 1=1
+    `;
+    
+    const params = [];
+    let paramCount = 0;
+
+    if (type_demande && type_demande !== '' && type_demande !== 'undefined') {
+      paramCount++;
+      query += ` AND d.type_demande = $${paramCount}`;
+      params.push(type_demande);
+      console.log(`✅ Filtre type_demande: ${type_demande}`);
+    }
+
+    if (statut && statut !== '' && statut !== 'undefined') {
+      paramCount++;
+      query += ` AND d.statut = $${paramCount}`;
+      params.push(statut);
+      console.log(`✅ Filtre statut: ${statut}`);
+    }
+
+    // Filtre type_conge - recherche dans type_conge ET type_conge_autre
+    if (type_conge && type_conge !== '' && type_conge !== 'undefined') {
+      console.log(`🎯 Filtre type_conge: ${type_conge}`);
+      
+      if (type_conge === 'autre') {
+        // Pour "autre", on recherche dans type_conge_autre
+        query += ` AND (d.type_conge = 'autre' OR (d.type_conge_autre IS NOT NULL AND d.type_conge_autre != ''))`;
+      } else {
+        // Pour les autres types, recherche dans type_conge
+        paramCount++;
+        query += ` AND d.type_conge = $${paramCount}`;
+        params.push(type_conge);
+      }
+    }
+
+    if (date_debut && date_debut !== '' && date_debut !== 'undefined') {
+      paramCount++;
+      query += ` AND d.date_depart >= $${paramCount}`;
+      params.push(date_debut);
+      console.log(`✅ Filtre date_debut: ${date_debut}`);
+    }
+
+    if (date_fin && date_fin !== '' && date_fin !== 'undefined') {
+      paramCount++;
+      query += ` AND d.date_depart <= $${paramCount}`;
+      params.push(date_fin);
+      console.log(`✅ Filtre date_fin: ${date_fin}`);
+    }
+
+    if (employe_id && employe_id !== '' && employe_id !== 'undefined') {
+      paramCount++;
+      query += ` AND d.employe_id = $${paramCount}`;
+      params.push(employe_id);
+      console.log(`✅ Filtre employe_id: ${employe_id}`);
+    }
+
+    // Toujours trier par date de création décroissante
+    query += ` ORDER BY d.created_at DESC`;
+    
+    // Ajout de la pagination si spécifiée
+    if (limit && limit !== 'all' && limit !== 'undefined') {
+      const offset = (parseInt(page) - 1) * parseInt(limit);
+      paramCount++;
+      query += ` LIMIT $${paramCount}`;
+      params.push(parseInt(limit));
+      
+      paramCount++;
+      query += ` OFFSET $${paramCount}`;
+      params.push(offset);
+    }
+
+    console.log('📝 Requête SQL finale:', query);
+    console.log('📝 Paramètres:', params);
+
+    const result = await pool.query(query, params);
+
+    // Requête pour le comptage total (sans pagination)
+    let countQuery = `SELECT COUNT(*) as total_count FROM demande_rh d WHERE 1=1`;
+    const countParams = [];
+    let countParamCount = 0;
+
+    if (type_demande && type_demande !== '' && type_demande !== 'undefined') {
+      countParamCount++;
+      countQuery += ` AND d.type_demande = $${countParamCount}`;
+      countParams.push(type_demande);
+    }
+
+    if (statut && statut !== '' && statut !== 'undefined') {
+      countParamCount++;
+      countQuery += ` AND d.statut = $${countParamCount}`;
+      countParams.push(statut);
+    }
+
+    if (type_conge && type_conge !== '' && type_conge !== 'undefined') {
+      if (type_conge === 'autre') {
+        countQuery += ` AND (d.type_conge = 'autre' OR (d.type_conge_autre IS NOT NULL AND d.type_conge_autre != ''))`;
+      } else {
+        countParamCount++;
+        countQuery += ` AND d.type_conge = $${countParamCount}`;
+        countParams.push(type_conge);
+      }
+    }
+
+    if (date_debut && date_debut !== '' && date_debut !== 'undefined') {
+      countParamCount++;
+      countQuery += ` AND d.date_depart >= $${countParamCount}`;
+      countParams.push(date_debut);
+    }
+
+    if (date_fin && date_fin !== '' && date_fin !== 'undefined') {
+      countParamCount++;
+      countQuery += ` AND d.date_depart <= $${countParamCount}`;
+      countParams.push(date_fin);
+    }
+
+    if (employe_id && employe_id !== '' && employe_id !== 'undefined') {
+      countParamCount++;
+      countQuery += ` AND d.employe_id = $${countParamCount}`;
+      countParams.push(employe_id);
+    }
+
+    const countResult = await pool.query(countQuery, countParams);
+    const total = parseInt(countResult.rows[0]?.total_count || 0);
+
+    console.log(`✅ Résultats: ${result.rows.length} demandes récupérées sur ${total} total`);
+
+    res.json({
+      success: true,
+      demandes: result.rows,
+      pagination: {
+        page: parseInt(page),
+        limit: limit && limit !== 'all' ? parseInt(limit) : total,
+        total,
+        pages: limit && limit !== 'all' ? Math.ceil(total / parseInt(limit)) : 1
+      }
+    });
+  } catch (error) {
+    console.error('❌ Erreur filtres avancés:', {
+      message: error.message,
+      stack: error.stack,
+      query: error.query
+    });
+    res.status(500).json({
+      success: false,
+      error: 'Erreur lors de la récupération des demandes',
+      message: error.message
+    });
+  }
+});
+
+
+
 // =========================
 // Fallback & erreurs
 // =========================
