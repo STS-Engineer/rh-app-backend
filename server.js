@@ -1391,7 +1391,8 @@ app.get('/api/demandes', authenticateToken, async (req, res) => {
       date_fin,
       employe_id,
       page = 1,
-      limit = 1000
+      limit = 1000,
+      _t // timestamp pour éviter le cache
     } = req.query;
 
     console.log('📋 Récupération des demandes RH avec filtres:', {
@@ -1427,111 +1428,123 @@ app.get('/api/demandes', authenticateToken, async (req, res) => {
     const params = [];
     let paramCount = 0;
 
-    if (type_demande && type_demande !== '') {
+    // CORRECTION: Vérifier explicitement les valeurs
+    if (type_demande && type_demande !== '' && type_demande !== 'undefined') {
       paramCount++;
       query += ` AND d.type_demande = $${paramCount}`;
       params.push(type_demande);
       console.log(`✅ Filtre type_demande: ${type_demande}`);
     }
 
-    if (statut && statut !== '') {
+    if (statut && statut !== '' && statut !== 'undefined') {
       paramCount++;
       query += ` AND d.statut = $${paramCount}`;
       params.push(statut);
       console.log(`✅ Filtre statut: ${statut}`);
     }
 
-    if (employe_id && employe_id !== '') {
+    if (employe_id && employe_id !== '' && employe_id !== 'undefined') {
       paramCount++;
       query += ` AND d.employe_id = $${paramCount}`;
       params.push(employe_id);
       console.log(`✅ Filtre employe_id: ${employe_id}`);
     }
 
-    // CORRECTION: Traiter date_debut et date_fin séparément
-    if (date_debut && date_debut !== '') {
+    // CORRECTION CRITIQUE: Traiter les dates séparément
+    if (date_debut && date_debut !== '' && date_debut !== 'undefined') {
       paramCount++;
       query += ` AND d.date_depart >= $${paramCount}`;
       params.push(date_debut);
       console.log(`✅ Filtre date_debut: ${date_debut}`);
     }
 
-    if (date_fin && date_fin !== '') {
+    if (date_fin && date_fin !== '' && date_fin !== 'undefined') {
       paramCount++;
       query += ` AND d.date_depart <= $${paramCount}`;
       params.push(date_fin);
       console.log(`✅ Filtre date_fin: ${date_fin}`);
     }
 
+    // Toujours trier par date de création décroissante
     query += ` ORDER BY d.created_at DESC`;
     
-    // Ajout de la pagination
-    if (limit && limit !== 'all') {
+    // Ajout de la pagination si spécifiée
+    if (limit && limit !== 'all' && limit !== 'undefined') {
       const offset = (parseInt(page) - 1) * parseInt(limit);
-      query += ` LIMIT $${paramCount + 1} OFFSET $${paramCount + 2}`;
-      params.push(parseInt(limit), offset);
+      paramCount++;
+      query += ` LIMIT $${paramCount}`;
+      params.push(parseInt(limit));
+      
+      paramCount++;
+      query += ` OFFSET $${paramCount}`;
+      params.push(offset);
     }
 
-    console.log('📝 Requête SQL:', query);
+    console.log('📝 Requête SQL finale:', query);
     console.log('📝 Paramètres:', params);
 
     const result = await pool.query(query, params);
 
-    // Requête pour le comptage total
-    let countQuery = `SELECT COUNT(*) FROM demande_rh d WHERE 1=1`;
+    // Requête pour le comptage total (sans pagination)
+    let countQuery = `SELECT COUNT(*) as total_count FROM demande_rh d WHERE 1=1`;
     const countParams = [];
     let countParamCount = 0;
 
-    if (type_demande && type_demande !== '') {
+    if (type_demande && type_demande !== '' && type_demande !== 'undefined') {
       countParamCount++;
       countQuery += ` AND d.type_demande = $${countParamCount}`;
       countParams.push(type_demande);
     }
 
-    if (statut && statut !== '') {
+    if (statut && statut !== '' && statut !== 'undefined') {
       countParamCount++;
       countQuery += ` AND d.statut = $${countParamCount}`;
       countParams.push(statut);
     }
 
-    if (employe_id && employe_id !== '') {
+    if (employe_id && employe_id !== '' && employe_id !== 'undefined') {
       countParamCount++;
       countQuery += ` AND d.employe_id = $${countParamCount}`;
       countParams.push(employe_id);
     }
 
-    if (date_debut && date_debut !== '') {
+    if (date_debut && date_debut !== '' && date_debut !== 'undefined') {
       countParamCount++;
       countQuery += ` AND d.date_depart >= $${countParamCount}`;
       countParams.push(date_debut);
     }
 
-    if (date_fin && date_fin !== '') {
+    if (date_fin && date_fin !== '' && date_fin !== 'undefined') {
       countParamCount++;
       countQuery += ` AND d.date_depart <= $${countParamCount}`;
       countParams.push(date_fin);
     }
 
     const countResult = await pool.query(countQuery, countParams);
-    const total = parseInt(countResult.rows[0].count);
+    const total = parseInt(countResult.rows[0]?.total_count || 0);
 
-    console.log(`✅ ${result.rows.length} demandes récupérées sur ${total} total`);
+    console.log(`✅ Résultats: ${result.rows.length} demandes récupérées sur ${total} total`);
 
     res.json({
+      success: true,
       demandes: result.rows,
       pagination: {
         page: parseInt(page),
-        limit: limit === 'all' ? total : parseInt(limit),
+        limit: limit && limit !== 'all' ? parseInt(limit) : total,
         total,
-        pages: limit === 'all' ? 1 : Math.ceil(total / limit)
+        pages: limit && limit !== 'all' ? Math.ceil(total / parseInt(limit)) : 1
       }
     });
   } catch (error) {
-    console.error('❌ Erreur récupération demandes:', error);
-    res.status(500).json({
-      error: 'Erreur lors de la récupération des demandes',
+    console.error('❌ Erreur récupération demandes:', {
       message: error.message,
-      stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
+      stack: error.stack,
+      query: error.query
+    });
+    res.status(500).json({
+      success: false,
+      error: 'Erreur lors de la récupération des demandes',
+      message: error.message
     });
   }
 });
