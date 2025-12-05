@@ -259,6 +259,11 @@ function isValidUrl(string) {
   }
 }
 
+function isValidEmail(email) {
+  const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+  return emailRegex.test(email);
+}
+
 function getDefaultAvatar(nom, prenom) {
   const initiales = (prenom.charAt(0) + nom.charAt(0)).toUpperCase();
   const colors = [
@@ -1074,8 +1079,8 @@ app.get('/', (req, res) => {
       'POST /api/employees',
       'POST /api/employees/upload-photo',
       'GET  /api/employee-photos/:filename',
-      'POST /api/archive/upload-pdf', // NOUVEAU
-      'GET  /api/archive-pdfs/:filename', // NOUVEAU
+      'POST /api/archive/upload-pdf',
+      'GET  /api/archive-pdfs/:filename',
       'GET  /api/demandes',
       'GET  /api/demandes/:id',
       'POST /api/demandes',
@@ -1285,7 +1290,7 @@ app.get('/api/employees/search', authenticateToken, async (req, res) => {
     }
 
     if (q) {
-      query += ' AND (nom ILIKE $2 OR prenom ILIKE $2 OR poste ILIKE $2)';
+      query += ' AND (nom ILIKE $2 OR prenom ILIKE $2 OR poste ILIKE $2 OR matricule ILIKE $2 OR adresse_mail ILIKE $2)';
       params.push(`%${q}%`);
     }
 
@@ -1349,8 +1354,30 @@ app.put('/api/employees/:id', authenticateToken, async (req, res) => {
       photo,
       dossier_rh,
       date_depart,
-      pdf_archive_url
+      pdf_archive_url,
+      adresse_mail,
+      mail_responsable1,
+      mail_responsable2
     } = req.body;
+
+    // Validation des emails
+    if (adresse_mail && !isValidEmail(adresse_mail)) {
+      return res.status(400).json({
+        error: 'Adresse email de l\'employé invalide'
+      });
+    }
+    
+    if (mail_responsable1 && !isValidEmail(mail_responsable1)) {
+      return res.status(400).json({
+        error: 'Adresse email du responsable 1 invalide'
+      });
+    }
+    
+    if (mail_responsable2 && !isValidEmail(mail_responsable2)) {
+      return res.status(400).json({
+        error: 'Adresse email du responsable 2 invalide'
+      });
+    }
 
     let photoUrl = photo;
     if (photo && !isValidUrl(photo)) {
@@ -1365,8 +1392,10 @@ app.put('/api/employees/:id', authenticateToken, async (req, res) => {
       SET matricule = $1, nom = $2, prenom = $3, cin = $4, passeport = $5,
           date_naissance = $6, poste = $7, site_dep = $8, type_contrat = $9,
           date_debut = $10, salaire_brute = $11, photo = $12, dossier_rh = $13,
-          date_depart = $14, pdf_archive_url = $15, updated_at = CURRENT_TIMESTAMP
-      WHERE id = $16
+          date_depart = $14, pdf_archive_url = $15, 
+          adresse_mail = $16, mail_responsable1 = $17, mail_responsable2 = $18,
+          updated_at = CURRENT_TIMESTAMP
+      WHERE id = $19
       RETURNING *
     `,
       [
@@ -1385,6 +1414,9 @@ app.put('/api/employees/:id', authenticateToken, async (req, res) => {
         dossier_rh,
         date_depart,
         pdf_archive_url,
+        adresse_mail || null,
+        mail_responsable1 || null,
+        mail_responsable2 || null,
         id
       ]
     );
@@ -1423,7 +1455,10 @@ app.post('/api/employees', authenticateToken, async (req, res) => {
       date_debut,
       salaire_brute,
       photo,
-      dossier_rh
+      dossier_rh,
+      adresse_mail,
+      mail_responsable1,
+      mail_responsable2
     } = req.body;
 
     if (
@@ -1435,10 +1470,30 @@ app.post('/api/employees', authenticateToken, async (req, res) => {
       !site_dep ||
       !type_contrat ||
       !date_debut ||
-      !salaire_brute
+      !salaire_brute ||
+      !adresse_mail
     ) {
       return res.status(400).json({
         error: 'Tous les champs obligatoires doivent être remplis'
+      });
+    }
+
+    // Validation des emails
+    if (adresse_mail && !isValidEmail(adresse_mail)) {
+      return res.status(400).json({
+        error: 'Adresse email de l\'employé invalide'
+      });
+    }
+    
+    if (mail_responsable1 && !isValidEmail(mail_responsable1)) {
+      return res.status(400).json({
+        error: 'Adresse email du responsable 1 invalide'
+      });
+    }
+    
+    if (mail_responsable2 && !isValidEmail(mail_responsable2)) {
+      return res.status(400).json({
+        error: 'Adresse email du responsable 2 invalide'
       });
     }
 
@@ -1450,8 +1505,10 @@ app.post('/api/employees', authenticateToken, async (req, res) => {
     const result = await pool.query(
       `
       INSERT INTO employees 
-      (matricule, nom, prenom, cin, passeport, date_naissance, poste, site_dep, type_contrat, date_debut, salaire_brute, photo, dossier_rh, statut) 
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, 'actif')
+      (matricule, nom, prenom, cin, passeport, date_naissance, poste, 
+       site_dep, type_contrat, date_debut, salaire_brute, photo, dossier_rh, 
+       adresse_mail, mail_responsable1, mail_responsable2, statut) 
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, 'actif')
       RETURNING *
     `,
       [
@@ -1467,7 +1524,10 @@ app.post('/api/employees', authenticateToken, async (req, res) => {
         date_debut,
         parseFloat(salaire_brute),
         photoUrl,
-        dossier_rh || null
+        dossier_rh || null,
+        adresse_mail,
+        mail_responsable1 || null,
+        mail_responsable2 || null
       ]
     );
 
@@ -1484,6 +1544,10 @@ app.post('/api/employees', authenticateToken, async (req, res) => {
       } else if (error.constraint === 'employees_cin_key') {
         res.status(400).json({
           error: 'Le CIN existe déjà'
+        });
+      } else if (error.constraint === 'employees_adresse_mail_key') {
+        res.status(400).json({
+          error: 'L\'adresse email existe déjà'
         });
       } else {
         res.status(400).json({
@@ -1524,7 +1588,6 @@ app.get('/api/demandes', authenticateToken, async (req, res) => {
       employe_id
     });
 
-    // REQUÊTE CORRIGÉE
     let query = `
       SELECT 
         d.*,
@@ -1534,7 +1597,8 @@ app.get('/api/demandes', authenticateToken, async (req, res) => {
         e.photo as employe_photo,
         e.matricule as employe_matricule,
         e.mail_responsable1,
-        e.mail_responsable2
+        e.mail_responsable2,
+        e.adresse_mail as employe_email
       FROM demande_rh d
       LEFT JOIN employees e ON d.employe_id = e.id
       WHERE 1=1
@@ -1543,10 +1607,8 @@ app.get('/api/demandes', authenticateToken, async (req, res) => {
     const params = [];
     let paramCount = 0;
 
-    // CORRECTION : Gestion améliorée du filtre type_demande
     if (type_demande && type_demande !== '' && type_demande !== 'undefined') {
       paramCount++;
-      // Utilisation de ILIKE pour insensibilité à la casse
       query += ` AND LOWER(TRIM(d.type_demande)) = LOWER($${paramCount})`;
       params.push(type_demande.trim());
       console.log(`✅ Filtre type_demande appliqué: "${type_demande}"`);
@@ -1585,28 +1647,12 @@ app.get('/api/demandes', authenticateToken, async (req, res) => {
     console.log('📝 Requête SQL finale:', query);
     console.log('📝 Paramètres:', params);
 
-    // DEBUG : Vérifier les valeurs distinctes en base
-    try {
-      const debugResult = await pool.query(`
-        SELECT DISTINCT type_demande, COUNT(*) as count 
-        FROM demande_rh 
-        GROUP BY type_demande 
-        ORDER BY type_demande
-      `);
-      console.log('🔍 Valeurs distinctes type_demande en base:', debugResult.rows);
-    } catch (debugErr) {
-      console.log('⚠️ Erreur debug:', debugErr.message);
-    }
-
-    // Exécuter la requête principale
     const result = await pool.query(query, params);
     
     console.log(`📊 Résultats de base: ${result.rows.length} demandes`);
     
-    // Récupérer les informations des responsables séparément
     const demandesAvecResponsables = await Promise.all(
       result.rows.map(async (demande) => {
-        // Récupérer responsable 1
         let responsable1_nom = null;
         let responsable1_prenom = null;
         
@@ -1621,7 +1667,6 @@ app.get('/api/demandes', authenticateToken, async (req, res) => {
           }
         }
         
-        // Récupérer responsable 2
         let responsable2_nom = null;
         let responsable2_prenom = null;
         
@@ -1646,7 +1691,6 @@ app.get('/api/demandes', authenticateToken, async (req, res) => {
       })
     );
 
-    // Requête de comptage
     let countQuery = `SELECT COUNT(*) as total_count FROM demande_rh d WHERE 1=1`;
     const countParams = [];
     let countParamCount = 0;
@@ -1705,39 +1749,6 @@ app.get('/api/demandes', authenticateToken, async (req, res) => {
   }
 });
 
-// Route de debug pour tester les filtres
-app.get('/api/debug/demandes-filtres', authenticateToken, async (req, res) => {
-  try {
-    const { type_demande } = req.query;
-    
-    console.log('🔍 Debug - Test filtre type_demande:', type_demande);
-    
-    // Vérifier les valeurs en base
-    const distinctResult = await pool.query(`
-      SELECT DISTINCT type_demande, COUNT(*) as count 
-      FROM demande_rh 
-      GROUP BY type_demande 
-      ORDER BY type_demande
-    `);
-    
-    // Tester la requête avec le filtre
-    const testResult = await pool.query(
-      `SELECT id, type_demande, titre, statut FROM demande_rh WHERE LOWER(TRIM(type_demande)) = LOWER($1)`,
-      [type_demande ? type_demande.trim() : '']
-    );
-    
-    res.json({
-      recherche: type_demande,
-      valeurs_distinctes_en_base: distinctResult.rows,
-      resultats_filtre: testResult.rows,
-      count: testResult.rows.length,
-      query_test: `SELECT * FROM demande_rh WHERE LOWER(TRIM(type_demande)) = LOWER('${type_demande || ''}')`
-    });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
 app.get('/api/demandes/:id', authenticateToken, async (req, res) => {
   try {
     const { id } = req.params;
@@ -1753,6 +1764,7 @@ app.get('/api/demandes/:id', authenticateToken, async (req, res) => {
              e.matricule as employe_matricule,
              e.mail_responsable1,
              e.mail_responsable2,
+             e.adresse_mail as employe_email,
              r1.nom as responsable1_nom,
              r1.prenom as responsable1_prenom,
              r2.nom as responsable2_nom,
@@ -2027,7 +2039,7 @@ app.listen(PORT, () => {
   console.log(`🌍 ENV: ${process.env.NODE_ENV || 'development'}`);
   console.log('📁 Dossier photos employés:', employeePhotoDir);
   console.log('📁 Dossier PDFs:', pdfStorageDir);
-  console.log('📁 Dossier Archive PDFs:', archivePdfDir); // NOUVEAU
+  console.log('📁 Dossier Archive PDFs:', archivePdfDir);
   console.log('='.repeat(60) + '\n');
 });
 
