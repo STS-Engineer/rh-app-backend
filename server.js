@@ -10,10 +10,41 @@ const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
 const PDFKitDocument = require('pdfkit');
-const axios = require('axios');
+const crypto = require('crypto');
+const nodemailer = require('nodemailer');
 
 const app = express();
 const PORT = Number(process.env.PORT || 5000);
+
+// =========================
+// CONFIGURATION FIXE POUR OUTLOOK
+// =========================
+const SMTP_HOST = "avocarbon-com.mail.protection.outlook.com";
+const SMTP_PORT = 25;
+const EMAIL_FROM_NAME = "Administration STS";
+const EMAIL_FROM = "administration.STS@avocarbon.com";
+
+console.log('📧 Configuration SMTP Outlook:', {
+  host: SMTP_HOST,
+  port: SMTP_PORT,
+  from: EMAIL_FROM,
+  fromName: EMAIL_FROM_NAME
+});
+
+// Configuration du transporteur email
+const emailTransporter = nodemailer.createTransport({
+  host: SMTP_HOST,
+  port: SMTP_PORT,
+  secure: false,
+  tls: { 
+    ciphers: 'SSLv3',
+    rejectUnauthorized: false 
+  },
+  connectionTimeout: 10000,
+  greetingTimeout: 10000,
+  socketTimeout: 10000,
+  debug: process.env.NODE_ENV === 'development'
+});
 
 // =========================
 // Configuration de la base
@@ -56,13 +87,10 @@ console.log('🔧 Variables d\'environnement:', {
 });
 
 // JWT secret
-const JWT_SECRET =
-  process.env.JWT_SECRET || 'fallback_secret_pour_development_seulement_2024';
+const JWT_SECRET = process.env.JWT_SECRET || 'fallback_secret_pour_development_seulement_2024';
 
 if (!process.env.JWT_SECRET) {
-  console.warn(
-    '⚠️  JWT_SECRET non défini dans .env - utilisation d\'un secret de développement'
-  );
+  console.warn('⚠️  JWT_SECRET non défini dans .env - utilisation d\'un secret de développement');
 }
 
 // =========================
@@ -104,9 +132,10 @@ const uploadTempDir = path.join(__dirname, 'uploads', 'temp');
 const pdfStorageDir = path.join(__dirname, 'uploads', 'pdfs');
 const employeePhotoDir = path.join(__dirname, 'uploads', 'employee-photos');
 const archivePdfDir = path.join(__dirname, 'uploads', 'archive-pdfs');
+const uploadPaieDir = path.join(__dirname, 'uploads', 'paie');
 
 // Créer les dossiers s'ils n'existent pas
-[uploadTempDir, pdfStorageDir, employeePhotoDir, archivePdfDir].forEach(dir => {
+[uploadTempDir, pdfStorageDir, employeePhotoDir, archivePdfDir, uploadPaieDir].forEach(dir => {
   if (!fs.existsSync(dir)) {
     fs.mkdirSync(dir, { recursive: true });
     console.log(`📁 Dossier créé: ${dir}`);
@@ -198,6 +227,28 @@ const employeePhotoUpload = multer({
 });
 
 // =========================
+// Configuration pour fiches de paie
+// =========================
+
+const uploadPaie = multer({
+  storage: multer.diskStorage({
+    destination: (req, file, cb) => cb(null, uploadPaieDir),
+    filename: (req, file, cb) => {
+      const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1e9);
+      cb(null, 'paie-' + uniqueSuffix + '.pdf');
+    }
+  }),
+  limits: { fileSize: 50 * 1024 * 1024 }, // 50MB max
+  fileFilter: (req, file, cb) => {
+    if (file.mimetype === 'application/pdf') {
+      cb(null, true);
+    } else {
+      cb(new Error('Seuls les fichiers PDF sont autorisés!'), false);
+    }
+  }
+});
+
+// =========================
 // Test connexion BDD
 // =========================
 
@@ -239,6 +290,7 @@ const authenticateToken = (req, res, next) => {
 
   jwt.verify(token, JWT_SECRET, (err, user) => {
     if (err) {
+      console.error('❌ Erreur vérification token:', err.message);
       return res.sendStatus(403);
     }
     req.user = user;
@@ -282,8 +334,201 @@ function getDefaultAvatar(nom, prenom) {
   return `https://ui-avatars.com/api/?name=${initiales}&background=${color}&color=fff&size=150`;
 }
 
+// Fonction pour générer un mot de passe aléatoire
+function generateRandomPassword(length = 10) {
+  const uppercase = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+  const lowercase = 'abcdefghijklmnopqrstuvwxyz';
+  const numbers = '0123456789';
+  const specials = '!@#$%^&*';
+  
+  let password = '';
+  
+  // Assurer au moins un caractère de chaque type
+  password += uppercase.charAt(Math.floor(Math.random() * uppercase.length));
+  password += lowercase.charAt(Math.floor(Math.random() * lowercase.length));
+  password += numbers.charAt(Math.floor(Math.random() * numbers.length));
+  password += specials.charAt(Math.floor(Math.random() * specials.length));
+  
+  // Remplir le reste
+  const allChars = uppercase + lowercase + numbers + specials;
+  for (let i = 4; i < length; i++) {
+    password += allChars.charAt(Math.floor(Math.random() * allChars.length));
+  }
+  
+  // Mélanger le mot de passe
+  return password.split('').sort(() => 0.5 - Math.random()).join('');
+}
+
+// Fonction pour envoyer un email avec Outlook
+async function sendEmail(to, subject, html) {
+  try {
+    const mailOptions = {
+      from: {
+        name: EMAIL_FROM_NAME,
+        address: EMAIL_FROM
+      },
+      to: to,
+      subject: subject,
+      html: html,
+      text: html.replace(/<[^>]*>/g, ''), // Version texte pour compatibilité
+      headers: {
+        'X-Mailer': 'RH Manager Application',
+        'X-Priority': '3',
+        'X-MSMail-Priority': 'Normal'
+      }
+    };
+
+    console.log('📧 Tentative d\'envoi email à:', to);
+    
+    const info = await emailTransporter.sendMail(mailOptions);
+    console.log('✅ Email envoyé avec succès:', info.messageId);
+    return true;
+  } catch (error) {
+    console.error('❌ Erreur envoi email:', {
+      message: error.message,
+      code: error.code,
+      response: error.response
+    });
+    throw error;
+  }
+}
+
 // =========================
-// NOUVELLES ROUTES POUR ARCHIVES PDF
+// NOUVELLES ROUTES POUR MOT DE PASSE OUBLIÉ
+// =========================
+
+// Route pour envoyer un nouveau mot de passe directement par email
+app.post('/api/auth/send-new-password', async (req, res) => {
+  try {
+    const { email } = req.body;
+    
+    console.log('🔐 Demande de nouveau mot de passe pour:', email);
+    
+    if (!email || !isValidEmail(email)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Adresse email invalide'
+      });
+    }
+    
+    // Vérifier si l'utilisateur existe
+    const userResult = await pool.query(
+      'SELECT id, email FROM users WHERE email = $1',
+      [email]
+    );
+    
+    if (userResult.rows.length === 0) {
+      console.log('❌ Utilisateur non trouvé:', email);
+      // Pour des raisons de sécurité, on ne révèle pas si l'email existe ou non
+      return res.json({
+        success: true,
+        message: 'Si un compte avec cet email existe, un nouveau mot de passe a été envoyé'
+      });
+    }
+    
+    const user = userResult.rows[0];
+    
+    // Générer un nouveau mot de passe
+    const newPassword = generateRandomPassword(10);
+    const hashedPassword = await bcrypt.hash(newPassword, 10);
+    
+    // Mettre à jour le mot de passe dans la base
+    await pool.query(
+      'UPDATE users SET password = $1 WHERE id = $2',
+      [hashedPassword, user.id]
+    );
+    
+    // Contenu HTML de l'email
+    const emailHtml = `
+      <!DOCTYPE html>
+      <html>
+      <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Votre nouveau mot de passe RH Manager</title>
+        <style>
+          body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; max-width: 600px; margin: 0 auto; padding: 20px; }
+          .header { background: #2563eb; color: white; padding: 20px; text-align: center; border-radius: 8px 8px 0 0; }
+          .content { background: #f8fafc; padding: 30px; border: 1px solid #e5e7eb; border-top: none; border-radius: 0 0 8px 8px; }
+          .password-box { background: white; border: 2px solid #2563eb; padding: 20px; margin: 20px 0; text-align: center; font-size: 18px; font-weight: bold; border-radius: 5px; }
+          .button { display: inline-block; background: #2563eb; color: white; padding: 12px 24px; text-decoration: none; border-radius: 5px; font-weight: bold; margin: 20px 0; }
+          .footer { margin-top: 30px; padding-top: 20px; border-top: 1px solid #e5e7eb; color: #6b7280; font-size: 12px; text-align: center; }
+          .warning { background: #fee2e2; border: 2px solid #dc2626; color: #991b1b; padding: 15px; border-radius: 5px; margin: 20px 0; }
+          .instructions { background: #fef3c7; border: 1px solid #f59e0b; padding: 15px; border-radius: 5px; margin: 20px 0; }
+        </style>
+      </head>
+      <body>
+        <div class="header">
+          <h2>🔐 Votre nouveau mot de passe RH Manager</h2>
+        </div>
+        <div class="content">
+          <p>Bonjour,</p>
+          <p>Vous avez demandé un nouveau mot de passe pour l'application <strong>RH Manager</strong>.</p>
+          <p>Voici vos nouvelles informations de connexion :</p>
+          
+          <div style="background: white; border: 1px solid #e5e7eb; border-radius: 5px; padding: 15px; margin: 20px 0;">
+            <p><strong>Email :</strong> ${email}</p>
+            <p><strong>Nouveau mot de passe :</strong></p>
+            <div class="password-box">${newPassword}</div>
+          </div>
+          
+          <div class="warning">
+            <p><strong>⚠️ SÉCURITÉ :</strong> Ne partagez jamais cet email avec qui que ce soit.</p>
+          </div>
+          
+          <div class="instructions">
+            <p><strong>📋 Instructions importantes :</strong></p>
+            <ol>
+              <li>Connectez-vous immédiatement avec ce mot de passe</li>
+              <li>Accédez à votre profil utilisateur</li>
+              <li>Changez ce mot de passe temporaire par un mot de passe personnel</li>
+            </ol>
+          </div>
+          
+          <div style="text-align: center;">
+            <a href="${process.env.FRONTEND_URL || 'http://localhost:3000'}" class="button">
+              Me connecter à RH Manager
+            </a>
+          </div>
+          
+          <p>Cordialement,<br>L'équipe RH Manager - Administration STS</p>
+        </div>
+        <div class="footer">
+          <p>Ceci est un message automatique, merci de ne pas y répondre.</p>
+          <p>© ${new Date().getFullYear()} RH Manager - Tous droits réservés</p>
+        </div>
+      </body>
+      </html>
+    `;
+    
+    try {
+      await sendEmail(email, 'Votre nouveau mot de passe RH Manager', emailHtml);
+      
+      console.log('✅ Nouveau mot de passe envoyé à:', email);
+      
+      res.json({
+        success: true,
+        message: 'Si un compte avec cet email existe, un nouveau mot de passe a été envoyé'
+      });
+    } catch (emailError) {
+      console.error('❌ Erreur envoi email:', emailError);
+      res.status(500).json({
+        success: false,
+        message: 'Erreur lors de l\'envoi du nouveau mot de passe'
+      });
+    }
+    
+  } catch (error) {
+    console.error('❌ Erreur envoi nouveau mot de passe:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Erreur lors de l\'envoi du nouveau mot de passe'
+    });
+  }
+});
+
+// =========================
+// ROUTES EXISTANTES (à insérer ici)
 // =========================
 
 // Route pour uploader un PDF d'archive
@@ -361,10 +606,7 @@ app.get('/api/archive-pdfs/:filename', (req, res) => {
   }
 });
 
-// =========================
-// Mise à jour de la route d'archivage pour utiliser les PDF uploadés
-// =========================
-
+// Mise à jour de la route d'archivage
 app.put('/api/employees/:id/archive', authenticateToken, async (req, res) => {
   try {
     const { id } = req.params;
@@ -408,10 +650,6 @@ app.put('/api/employees/:id/archive', authenticateToken, async (req, res) => {
     });
   }
 });
-
-// =========================
-// Routes pour photos employés
-// =========================
 
 // Route pour uploader une photo d'employé
 app.post(
@@ -508,10 +746,6 @@ app.get('/api/employee-photos/:filename', (req, res) => {
   }
 });
 
-// =========================
-// Routes Dossier RH
-// =========================
-
 // Upload des photos temporaires pour dossier RH
 app.post(
   '/api/dossier-rh/upload-photos',
@@ -564,7 +798,6 @@ app.post(
       const { photos: clientPhotos, dossierName } = req.body;
 
       console.log('📄 Génération PDF pour employé:', employeeId, 'dossier:', dossierName);
-      console.log('📸 Photos reçues du client:', clientPhotos);
 
       if (!dossierName || !dossierName.trim()) {
         return res.status(400).json({ error: 'Nom de dossier manquant' });
@@ -601,6 +834,107 @@ app.post(
           details: `${missingFiles.length} fichier(s) manquant(s)`
         });
       }
+
+      // Fonction pour générer et sauvegarder le PDF
+      const generateAndSavePDF = (employee, photos, dossierName) => {
+        return new Promise((resolve, reject) => {
+          try {
+            console.log('🧾 Début génération PDF avec pdfkit...');
+            const doc = new PDFKitDocument({ size: 'A4', margin: 50 });
+            const buffers = [];
+
+            doc.on('data', chunk => buffers.push(chunk));
+            doc.on('error', err => {
+              console.error('❌ Erreur PDFKit:', err);
+              reject(err);
+            });
+
+            doc.on('end', async () => {
+              try {
+                const pdfBuffer = Buffer.concat(buffers);
+                const fileName = `dossier-${employee.matricule || 'EMP'}-${Date.now()}.pdf`;
+                console.log('💾 Sauvegarde locale du fichier:', fileName);
+                
+                const filePath = path.join(pdfStorageDir, fileName);
+                fs.writeFileSync(filePath, pdfBuffer);
+                
+                const baseUrl = process.env.BACKEND_URL || 'https://backend-rh.azurewebsites.net';
+                const pdfUrl = `${baseUrl}/api/pdfs/${fileName}`;
+                
+                console.log('✅ PDF sauvegardé localement:', pdfUrl);
+                resolve(pdfUrl);
+              } catch (saveError) {
+                console.error('❌ Erreur sauvegarde locale:', saveError);
+                reject(saveError);
+              }
+            });
+
+            // Contenu du PDF
+            doc.fontSize(24).text('DOSSIER RH', { align: 'left' });
+            doc.moveDown(2);
+
+            doc.fontSize(16).text(`Employé : ${employee.prenom} ${employee.nom}`);
+            doc.moveDown(0.5);
+            doc.fontSize(14).text(`Matricule : ${employee.matricule || '-'}`);
+            doc.moveDown(0.5);
+            doc.fontSize(14).text(`Poste : ${employee.poste || '-'}`);
+            doc.moveDown(0.5);
+            doc.fontSize(14).text(`Département / Site : ${employee.site_dep || '-'}`);
+            doc.moveDown(0.5);
+            doc.fontSize(14).text(`Nom du dossier : ${dossierName || '-'}`);
+            doc.moveDown(0.5);
+            doc
+              .fontSize(12)
+              .text(`Date de génération : ${new Date().toLocaleDateString('fr-FR')}`);
+            doc.addPage();
+
+            // Pages des photos
+            if (Array.isArray(photos)) {
+              photos.forEach((photo, index) => {
+                try {
+                  if (!photo.path || !fs.existsSync(photo.path)) {
+                    console.warn('⚠️ Photo introuvable:', photo.path);
+                    return;
+                  }
+
+                  if (index > 0) {
+                    doc.addPage();
+                  }
+
+                  const pageWidth = doc.page.width;
+                  const pageHeight = doc.page.height;
+                  const maxWidth = pageWidth - 100;
+                  const maxHeight = pageHeight - 150;
+
+                  doc
+                    .fontSize(12)
+                    .text(`Photo : ${photo.originalname || photo.filename}`, 50, 50);
+
+                  doc.image(photo.path, {
+                    fit: [maxWidth, maxHeight],
+                    align: 'center',
+                    valign: 'center',
+                    x: 50,
+                    y: 100
+                  });
+
+                  console.log('📄 Photo ajoutée au PDF:', photo.path);
+                } catch (imageError) {
+                  console.error(
+                    `❌ Erreur avec la photo ${photo.filename}:`,
+                    imageError.message
+                  );
+                }
+              });
+            }
+
+            doc.end();
+          } catch (error) {
+            console.error('❌ Erreur générale generateAndSavePDF:', error);
+            reject(error);
+          }
+        });
+      };
 
       const pdfUrl = await generateAndSavePDF(employee, photos, dossierName);
 
@@ -644,122 +978,6 @@ app.post(
   }
 );
 
-// Génération + sauvegarde PDF local
-async function generateAndSavePDF(employee, photos, dossierName) {
-  return new Promise((resolve, reject) => {
-    try {
-      console.log('🧾 Début génération PDF avec pdfkit...');
-      const doc = new PDFKitDocument({ size: 'A4', margin: 50 });
-      const buffers = [];
-
-      doc.on('data', chunk => buffers.push(chunk));
-      doc.on('error', err => {
-        console.error('❌ Erreur PDFKit:', err);
-        reject(err);
-      });
-
-      doc.on('end', async () => {
-        try {
-          const pdfBuffer = Buffer.concat(buffers);
-          const fileName = `dossier-${employee.matricule || 'EMP'}-${Date.now()}.pdf`;
-          console.log('💾 Sauvegarde locale du fichier:', fileName);
-          
-          const pdfUrl = await savePDFLocally(pdfBuffer, fileName);
-          console.log('✅ PDF sauvegardé localement:', pdfUrl);
-          resolve(pdfUrl);
-        } catch (saveError) {
-          console.error('❌ Erreur sauvegarde locale:', saveError);
-          reject(saveError);
-        }
-      });
-
-      // Contenu du PDF
-      doc.fontSize(24).text('DOSSIER RH', { align: 'left' });
-      doc.moveDown(2);
-
-      doc.fontSize(16).text(`Employé : ${employee.prenom} ${employee.nom}`);
-      doc.moveDown(0.5);
-      doc.fontSize(14).text(`Matricule : ${employee.matricule || '-'}`);
-      doc.moveDown(0.5);
-      doc.fontSize(14).text(`Poste : ${employee.poste || '-'}`);
-      doc.moveDown(0.5);
-      doc.fontSize(14).text(`Département / Site : ${employee.site_dep || '-'}`);
-      doc.moveDown(0.5);
-      doc.fontSize(14).text(`Nom du dossier : ${dossierName || '-'}`);
-      doc.moveDown(0.5);
-      doc
-        .fontSize(12)
-        .text(`Date de génération : ${new Date().toLocaleDateString('fr-FR')}`);
-      doc.addPage();
-
-      // Pages des photos
-      if (Array.isArray(photos)) {
-        photos.forEach((photo, index) => {
-          try {
-            if (!photo.path || !fs.existsSync(photo.path)) {
-              console.warn('⚠️ Photo introuvable:', photo.path);
-              return;
-            }
-
-            if (index > 0) {
-              doc.addPage();
-            }
-
-            const pageWidth = doc.page.width;
-            const pageHeight = doc.page.height;
-            const maxWidth = pageWidth - 100;
-            const maxHeight = pageHeight - 150;
-
-            doc
-              .fontSize(12)
-              .text(`Photo : ${photo.originalname || photo.filename}`, 50, 50);
-
-            doc.image(photo.path, {
-              fit: [maxWidth, maxHeight],
-              align: 'center',
-              valign: 'center',
-              x: 50,
-              y: 100
-            });
-
-            console.log('📄 Photo ajoutée au PDF:', photo.path);
-          } catch (imageError) {
-            console.error(
-              `❌ Erreur avec la photo ${photo.filename}:`,
-              imageError.message
-            );
-          }
-        });
-      }
-
-      doc.end();
-    } catch (error) {
-      console.error('❌ Erreur générale generateAndSavePDF:', error);
-      reject(error);
-    }
-  });
-}
-
-// Sauvegarde locale du PDF
-async function savePDFLocally(pdfBuffer, fileName) {
-  try {
-    const filePath = path.join(pdfStorageDir, fileName);
-    fs.writeFileSync(filePath, pdfBuffer);
-    
-    // URL accessible via une route dédiée
-    const baseUrl = process.env.BACKEND_URL || 'https://backend-rh.azurewebsites.net';
-    const pdfUrl = `${baseUrl}/api/pdfs/${fileName}`;
-    
-    console.log('✅ PDF sauvegardé:', filePath);
-    console.log('🔗 URL accessible:', pdfUrl);
-    
-    return pdfUrl;
-  } catch (error) {
-    console.error('❌ Erreur sauvegarde locale PDF:', error);
-    throw new Error('Impossible de sauvegarder le PDF localement');
-  }
-}
-
 // Route pour servir les PDF
 app.get('/api/pdfs/:filename', (req, res) => {
   try {
@@ -786,40 +1004,6 @@ app.get('/api/pdfs/:filename', (req, res) => {
 
 const { PDFDocument } = require('pdf-lib');
 const pdfParse = require('pdf-parse');
-const nodemailer = require('nodemailer');
-
-// Configuration SMTP Outlook
-const transporter = nodemailer.createTransport({
-  host: 'avocarbon-com.mail.protection.outlook.com',
-  port: 25,
-  secure: false,
-  tls: { rejectUnauthorized: false }
-});
-
-// Configuration Multer pour les PDF de paie
-const uploadPaieDir = path.join(__dirname, 'uploads', 'paie');
-if (!fs.existsSync(uploadPaieDir)) {
-  fs.mkdirSync(uploadPaieDir, { recursive: true });
-  console.log(`📁 Dossier créé: ${uploadPaieDir}`);
-}
-
-const uploadPaie = multer({
-  storage: multer.diskStorage({
-    destination: (req, file, cb) => cb(null, uploadPaieDir),
-    filename: (req, file, cb) => {
-      const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1e9);
-      cb(null, 'paie-' + uniqueSuffix + '.pdf');
-    }
-  }),
-  limits: { fileSize: 50 * 1024 * 1024 }, // 50MB max
-  fileFilter: (req, file, cb) => {
-    if (file.mimetype === 'application/pdf') {
-      cb(null, true);
-    } else {
-      cb(new Error('Seuls les fichiers PDF sont autorisés!'), false);
-    }
-  }
-});
 
 // Fonction pour extraire le matricule d'une page PDF
 function extraireMatricule(texte) {
@@ -860,6 +1044,57 @@ function extraireMatricule(texte) {
   
   console.log('⚠️ Aucun matricule trouvé dans le texte');
   return null;
+}
+
+// Fonction pour envoyer la fiche de paie par email
+async function envoyerFichePaieParEmail(employe, pdfPath, fileName) {
+  const moisActuel = new Date().toLocaleDateString('fr-FR', { 
+    month: 'long', 
+    year: 'numeric' 
+  });
+
+  const mailOptions = {
+    from: {
+      name: 'Administration STS',
+      address: 'administration.STS@avocarbon.com'
+    },
+    to: employe.adresse_mail,
+    subject: `Votre fiche de paie - ${moisActuel}`,
+    html: `
+      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+        <h2 style="color: #2563eb; border-bottom: 2px solid #2563eb; padding-bottom: 10px;">
+          📄 Votre fiche de paie
+        </h2>
+        <div style="background: #f8fafc; padding: 20px; border-radius: 8px; margin: 20px 0;">
+          <p><strong>Bonjour ${employe.prenom} ${employe.nom},</strong></p>
+          <p>Veuillez trouver ci-joint votre fiche de paie pour le mois de <strong>${moisActuel}</strong>.</p>
+          <p><strong>Matricule :</strong> ${employe.matricule}</p>
+          <p><strong>Poste :</strong> ${employe.poste || 'N/A'}</p>
+        </div>
+        <p style="color: #6b7280; font-size: 14px;">
+          Ce document est confidentiel et personnel. Merci de le conserver précieusement.
+        </p>
+        <p style="color: #6b7280; font-size: 12px; margin-top: 30px; text-align: center;">
+          Ceci est un message automatique, merci de ne pas y répondre.
+        </p>
+      </div>
+    `,
+    attachments: [
+      {
+        filename: fileName,
+        path: pdfPath,
+        contentType: 'application/pdf'
+      }
+    ]
+  };
+
+  try {
+    await emailTransporter.sendMail(mailOptions);
+    console.log(`📧 Email envoyé à ${employe.adresse_mail}`);
+  } catch (error) {
+    console.error('❌ Erreur envoi email:', error);
+    throw new Error(`Impossible d'envoyer l'email à ${employe.adresse_mail}: ${error.message}`);
+  }
 }
 
 // Route principale pour traiter les fiches de paie
@@ -1006,57 +1241,6 @@ app.post(
   }
 );
 
-// Fonction pour envoyer la fiche de paie par email
-async function envoyerFichePaieParEmail(employe, pdfPath, fileName) {
-  const moisActuel = new Date().toLocaleDateString('fr-FR', { 
-    month: 'long', 
-    year: 'numeric' 
-  });
-
-  const mailOptions = {
-    from: {
-      name: 'Administration STS',
-      address: 'administration.STS@avocarbon.com'
-    },
-    to: employe.adresse_mail,
-    subject: `Votre fiche de paie - ${moisActuel}`,
-    html: `
-      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-        <h2 style="color: #2563eb; border-bottom: 2px solid #2563eb; padding-bottom: 10px;">
-          📄 Votre fiche de paie
-        </h2>
-        <div style="background: #f8fafc; padding: 20px; border-radius: 8px; margin: 20px 0;">
-          <p><strong>Bonjour ${employe.prenom} ${employe.nom},</strong></p>
-          <p>Veuillez trouver ci-joint votre fiche de paie pour le mois de <strong>${moisActuel}</strong>.</p>
-          <p><strong>Matricule :</strong> ${employe.matricule}</p>
-          <p><strong>Poste :</strong> ${employe.poste || 'N/A'}</p>
-        </div>
-        <p style="color: #6b7280; font-size: 14px;">
-          Ce document est confidentiel et personnel. Merci de le conserver précieusement.
-        </p>
-        <p style="color: #6b7280; font-size: 12px; margin-top: 30px; text-align: center;">
-          Ceci est un message automatique, merci de ne pas y répondre.
-        </p>
-      </div>
-    `,
-    attachments: [
-      {
-        filename: fileName,
-        path: pdfPath,
-        contentType: 'application/pdf'
-      }
-    ]
-  };
-
-  try {
-    await transporter.sendMail(mailOptions);
-    console.log(`📧 Email envoyé à ${employe.adresse_mail}`);
-  } catch (error) {
-    console.error('❌ Erreur envoi email:', error);
-    throw new Error(`Impossible d'envoyer l'email à ${employe.adresse_mail}: ${error.message}`);
-  }
-}
-
 // =========================
 // ROUTES RH
 // =========================
@@ -1071,6 +1255,7 @@ app.get('/', (req, res) => {
     endpoints: [
       'GET  /api/health',
       'POST /api/auth/login',
+      'POST /api/auth/send-new-password',
       'GET  /api/employees',
       'GET  /api/employees/archives',
       'GET  /api/employees/search?q=nom',
@@ -1546,8 +1731,9 @@ app.post('/api/employees', authenticateToken, async (req, res) => {
           error: 'Le CIN existe déjà'
         });
       } else if (error.constraint === 'employees_adresse_mail_key') {
-        res.status(400).json({
-          error: 'L\'adresse email existe déjà'
+        res.status(500).json({
+          error: 'L\'adresse email existe déjà',
+          message: error.message
         });
       } else {
         res.status(400).json({
@@ -1564,7 +1750,7 @@ app.post('/api/employees', authenticateToken, async (req, res) => {
 });
 
 // =========================
-// Routes Demandes RH - CORRIGÉES
+// Routes Demandes RH
 // =========================
 
 app.get('/api/demandes', authenticateToken, async (req, res) => {
@@ -2036,6 +2222,7 @@ app.listen(PORT, () => {
   console.log(`🌐 URL: http://localhost:${PORT}`);
   console.log(`🗄️  Base: ${process.env.DB_NAME} @ ${process.env.DB_HOST}`);
   console.log(`🔐 JWT: ${process.env.JWT_SECRET ? '✅' : '⚠️'}`);
+  console.log(`📧 Email: ${EMAIL_FROM}`);
   console.log(`🌍 ENV: ${process.env.NODE_ENV || 'development'}`);
   console.log('📁 Dossier photos employés:', employeePhotoDir);
   console.log('📁 Dossier PDFs:', pdfStorageDir);
