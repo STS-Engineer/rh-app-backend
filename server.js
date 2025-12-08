@@ -530,6 +530,94 @@ app.post('/api/auth/send-new-password', async (req, res) => {
   }
 });
 
+
+// =========================
+// ROUTE POUR CHANGER LE MOT DE PASSE (UTILISATEUR CONNECTÉ)
+// =========================
+
+app.post('/api/auth/change-password', authenticateToken, async (req, res) => {
+  try {
+    const { currentPassword, newPassword } = req.body;
+    const userId = req.user.userId;
+
+    console.log('🔐 Changement de mot de passe pour utilisateur ID:', userId);
+
+    if (!currentPassword || !newPassword) {
+      return res.status(400).json({
+        success: false,
+        message: 'Mot de passe actuel et nouveau mot de passe requis'
+      });
+    }
+
+    if (newPassword.length < 6) {
+      return res.status(400).json({
+        success: false,
+        message: 'Le nouveau mot de passe doit contenir au moins 6 caractères'
+      });
+    }
+
+    // Récupérer l'utilisateur
+    const userResult = await pool.query(
+      'SELECT * FROM users WHERE id = $1',
+      [userId]
+    );
+
+    if (userResult.rows.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'Utilisateur non trouvé'
+      });
+    }
+
+    const user = userResult.rows[0];
+
+    // Vérifier le mot de passe actuel
+    const isCurrentPasswordValid = await bcrypt.compare(currentPassword, user.password);
+
+    if (!isCurrentPasswordValid) {
+      return res.status(401).json({
+        success: false,
+        message: 'Mot de passe actuel incorrect'
+      });
+    }
+
+    // Hasher le nouveau mot de passe
+    const hashedPassword = await bcrypt.hash(newPassword, 10);
+
+    // Mettre à jour le mot de passe dans la base
+    await pool.query(
+      'UPDATE users SET password = $1, password_is_temporary = FALSE, password_changed_at = CURRENT_TIMESTAMP WHERE id = $2',
+      [hashedPassword, userId]
+    );
+
+    console.log('✅ Mot de passe changé pour:', user.email);
+
+    // Optionnel: Générer un nouveau token avec password_is_temporary = false
+    const newToken = jwt.sign(
+      {
+        userId: user.id,
+        email: user.email,
+        passwordIsTemporary: false
+      },
+      JWT_SECRET,
+      { expiresIn: '24h' }
+    );
+
+    res.json({
+      success: true,
+      message: 'Mot de passe changé avec succès',
+      token: newToken
+    });
+
+  } catch (error) {
+    console.error('❌ Erreur changement mot de passe:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Erreur lors du changement de mot de passe'
+    });
+  }
+});
+
 // =========================
 // ROUTES EXISTANTES (à insérer ici)
 // =========================
