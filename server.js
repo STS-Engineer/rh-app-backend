@@ -1376,7 +1376,9 @@ app.post('/api/auth/login', async (req, res) => {
         const token = jwt.sign(
           {
             userId: user.id,
-            email: user.email
+            email: user.email,
+            // Ajouter l'info si le mot de passe est temporaire dans le token
+            passwordIsTemporary: user.password_is_temporary || false
           },
           JWT_SECRET,
           { expiresIn: '24h' }
@@ -1387,7 +1389,8 @@ app.post('/api/auth/login', async (req, res) => {
           token: token,
           user: {
             id: user.id,
-            email: user.email
+            email: user.email,
+            passwordIsTemporary: user.password_is_temporary || false
           }
         });
       } else {
