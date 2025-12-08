@@ -432,12 +432,15 @@ app.post('/api/auth/send-new-password', async (req, res) => {
     const newPassword = generateRandomPassword(10);
     const hashedPassword = await bcrypt.hash(newPassword, 10);
     
-    // Mettre à jour le mot de passe dans la base
-    await pool.query(
-      'UPDATE users SET password = $1 WHERE id = $2',
-      [hashedPassword, user.id]
-    );
+    // Marquer le mot de passe comme temporaire
+    const passwordIsTemporary = true;
+    const passwordChangedAt = new Date();
     
+    // Mettre à jour le mot de passe dans la base avec le flag temporaire
+    await pool.query(
+      'UPDATE users SET password = $1, password_is_temporary = $2, password_changed_at = $3 WHERE id = $4',
+      [hashedPassword, passwordIsTemporary, passwordChangedAt, user.id]
+    );
     // Contenu HTML de l'email
     const emailHtml = `
       <!DOCTYPE html>
