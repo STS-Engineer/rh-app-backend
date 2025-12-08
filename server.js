@@ -432,15 +432,12 @@ app.post('/api/auth/send-new-password', async (req, res) => {
     const newPassword = generateRandomPassword(10);
     const hashedPassword = await bcrypt.hash(newPassword, 10);
     
-    // Marquer le mot de passe comme temporaire
-    const passwordIsTemporary = true;
-    const passwordChangedAt = new Date();
-    
-    // Mettre à jour le mot de passe dans la base avec le flag temporaire
+    // Mettre à jour le mot de passe dans la base
     await pool.query(
-      'UPDATE users SET password = $1, password_is_temporary = $2, password_changed_at = $3 WHERE id = $4',
-      [hashedPassword, passwordIsTemporary, passwordChangedAt, user.id]
+      'UPDATE users SET password = $1 WHERE id = $2',
+      [hashedPassword, user.id]
     );
+    
     // Contenu HTML de l'email
     const emailHtml = `
       <!DOCTYPE html>
@@ -1376,9 +1373,7 @@ app.post('/api/auth/login', async (req, res) => {
         const token = jwt.sign(
           {
             userId: user.id,
-            email: user.email,
-            // Ajouter l'info si le mot de passe est temporaire dans le token
-            passwordIsTemporary: user.password_is_temporary || false
+            email: user.email
           },
           JWT_SECRET,
           { expiresIn: '24h' }
@@ -1389,8 +1384,7 @@ app.post('/api/auth/login', async (req, res) => {
           token: token,
           user: {
             id: user.id,
-            email: user.email,
-            passwordIsTemporary: user.password_is_temporary || false
+            email: user.email
           }
         });
       } else {
@@ -1417,133 +1411,6 @@ app.post('/api/auth/login', async (req, res) => {
     });
   }
 });
-
-
-// Route pour changer le mot de passe
-app.post('/api/auth/change-password', authenticateToken, async (req, res) => {
-  try {
-    const { currentPassword, newPassword } = req.body;
-    const userId = req.user.userId;
-
-    console.log('🔐 Changement de mot de passe pour utilisateur ID:', userId);
-
-    if (!currentPassword || !newPassword) {
-      return res.status(400).json({
-        success: false,
-        message: 'Mot de passe actuel et nouveau mot de passe requis'
-      });
-    }
-
-    if (newPassword.length < 6) {
-      return res.status(400).json({
-        success: false,
-        message: 'Le nouveau mot de passe doit contenir au moins 6 caractères'
-      });
-    }
-
-    // Récupérer l'utilisateur
-    const userResult = await pool.query(
-      'SELECT * FROM users WHERE id = $1',
-      [userId]
-    );
-
-    if (userResult.rows.length === 0) {
-      return res.status(404).json({
-        success: false,
-        message: 'Utilisateur non trouvé'
-      });
-    }
-
-    const user = userResult.rows[0];
-
-    // Vérifier le mot de passe actuel
-    const isCurrentPasswordValid = await bcrypt.compare(currentPassword, user.password);
-
-    if (!isCurrentPasswordValid) {
-      return res.status(401).json({
-        success: false,
-        message: 'Mot de passe actuel incorrect'
-      });
-    }
-
-    // Hasher le nouveau mot de passe
-    const hashedPassword = await bcrypt.hash(newPassword, 10);
-
-    // Mettre à jour le mot de passe et marquer comme non temporaire
-    await pool.query(
-      `UPDATE users 
-       SET password = $1, 
-           password_is_temporary = FALSE,
-           password_changed_at = CURRENT_TIMESTAMP,
-           updated_at = CURRENT_TIMESTAMP
-       WHERE id = $2`,
-      [hashedPassword, userId]
-    );
-
-    console.log('✅ Mot de passe changé pour:', user.email);
-
-    // Envoyer un email de confirmation
-    const emailHtml = `
-      <!DOCTYPE html>
-      <html>
-      <head>
-        <meta charset="UTF-8">
-        <style>
-          body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; max-width: 600px; margin: 0 auto; padding: 20px; }
-          .header { background: #10b981; color: white; padding: 20px; text-align: center; border-radius: 8px 8px 0 0; }
-          .content { background: #f8fafc; padding: 30px; border: 1px solid #e5e7eb; border-top: none; border-radius: 0 0 8px 8px; }
-          .success { background: #d1fae5; border: 1px solid #10b981; color: #065f46; padding: 15px; border-radius: 5px; margin: 20px 0; }
-          .footer { margin-top: 30px; padding-top: 20px; border-top: 1px solid #e5e7eb; color: #6b7280; font-size: 12px; text-align: center; }
-        </style>
-      </head>
-      <body>
-        <div class="header">
-          <h2>✅ Mot de passe modifié avec succès</h2>
-        </div>
-        <div class="content">
-          <div class="success">
-            <p><strong>Votre mot de passe a été modifié avec succès.</strong></p>
-          </div>
-          <p>Bonjour,</p>
-          <p>Nous vous confirmons que le mot de passe de votre compte <strong>RH Manager</strong> a été modifié avec succès.</p>
-          <p><strong>Détails de l'opération :</strong></p>
-          <ul>
-            <li>Date : ${new Date().toLocaleDateString('fr-FR')}</li>
-            <li>Heure : ${new Date().toLocaleTimeString('fr-FR')}</li>
-            <li>Email du compte : ${user.email}</li>
-          </ul>
-          <p>Si vous n'êtes pas à l'origine de cette modification, veuillez contacter immédiatement l'administrateur du système.</p>
-          <p>Cordialement,<br>L'équipe RH Manager</p>
-        </div>
-        <div class="footer">
-          <p>Ceci est un message automatique, merci de ne pas y répondre.</p>
-          <p>© ${new Date().getFullYear()} RH Manager - Tous droits réservés</p>
-        </div>
-      </body>
-      </html>
-    `;
-
-    try {
-      await sendEmail(user.email, 'Confirmation de changement de mot de passe - RH Manager', emailHtml);
-    } catch (emailError) {
-      console.warn('⚠️ Impossible d\'envoyer l\'email de confirmation:', emailError.message);
-    }
-
-    res.json({
-      success: true,
-      message: 'Mot de passe changé avec succès'
-    });
-
-  } catch (error) {
-    console.error('❌ Erreur changement mot de passe:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Erreur lors du changement de mot de passe'
-    });
-  }
-});
-
-
 
 // =========================
 // Routes Employés
