@@ -441,6 +441,7 @@ app.post('/api/auth/send-new-password', async (req, res) => {
       'UPDATE users SET password = $1, password_is_temporary = $2, password_changed_at = $3 WHERE id = $4',
       [hashedPassword, passwordIsTemporary, passwordChangedAt, user.id]
     );
+    
     // Contenu HTML de l'email
     const emailHtml = `
       <!DOCTYPE html>
@@ -525,11 +526,10 @@ app.post('/api/auth/send-new-password', async (req, res) => {
     console.error('❌ Erreur envoi nouveau mot de passe:', error);
     res.status(500).json({
       success: false,
-      message: 'Erreur lors de l\'envoi du nouveau mot de passe'
+      message: 'Erreur lors de l'envoi du nouveau mot de passe'
     });
   }
 });
-
 
 // =========================
 // ROUTE POUR CHANGER LE MOT DE PASSE (UTILISATEUR CONNECTÉ)
@@ -537,15 +537,19 @@ app.post('/api/auth/send-new-password', async (req, res) => {
 
 app.post('/api/auth/change-password', authenticateToken, async (req, res) => {
   try {
+    console.log('🔄 Tentative de changement de mot de passe');
+    
     const { currentPassword, newPassword } = req.body;
     const userId = req.user.userId;
 
-    console.log('🔐 Changement de mot de passe pour utilisateur ID:', userId);
+    console.log('User ID:', userId);
+    console.log('Données reçues:', { currentPassword, newPassword });
 
-    if (!currentPassword || !newPassword) {
+    // Validation des données
+    if (!newPassword) {
       return res.status(400).json({
         success: false,
-        message: 'Mot de passe actuel et nouveau mot de passe requis'
+        message: 'Nouveau mot de passe requis'
       });
     }
 
@@ -563,6 +567,7 @@ app.post('/api/auth/change-password', authenticateToken, async (req, res) => {
     );
 
     if (userResult.rows.length === 0) {
+      console.log('❌ Utilisateur non trouvé:', userId);
       return res.status(404).json({
         success: false,
         message: 'Utilisateur non trouvé'
@@ -570,29 +575,51 @@ app.post('/api/auth/change-password', authenticateToken, async (req, res) => {
     }
 
     const user = userResult.rows[0];
+    console.log('Utilisateur trouvé:', user.email);
+    console.log('Mot de passe temporaire?', user.password_is_temporary);
 
-    // Vérifier le mot de passe actuel
-    const isCurrentPasswordValid = await bcrypt.compare(currentPassword, user.password);
+    // Vérifier si l'utilisateur a un mot de passe temporaire
+    const isTemporaryPassword = user.password_is_temporary === true;
+    
+    // Si le mot de passe est temporaire, on ne vérifie pas le mot de passe actuel
+    if (!isTemporaryPassword) {
+      if (!currentPassword) {
+        return res.status(400).json({
+          success: false,
+          message: 'Mot de passe actuel requis'
+        });
+      }
 
-    if (!isCurrentPasswordValid) {
-      return res.status(401).json({
-        success: false,
-        message: 'Mot de passe actuel incorrect'
-      });
+      // Vérifier le mot de passe actuel
+      const isCurrentPasswordValid = await bcrypt.compare(currentPassword, user.password);
+
+      if (!isCurrentPasswordValid) {
+        console.log('❌ Mot de passe actuel incorrect');
+        return res.status(401).json({
+          success: false,
+          message: 'Mot de passe actuel incorrect'
+        });
+      }
     }
 
     // Hasher le nouveau mot de passe
     const hashedPassword = await bcrypt.hash(newPassword, 10);
+    const passwordChangedAt = new Date();
 
     // Mettre à jour le mot de passe dans la base
     await pool.query(
-      'UPDATE users SET password = $1, password_is_temporary = FALSE, password_changed_at = CURRENT_TIMESTAMP WHERE id = $2',
-      [hashedPassword, userId]
+      `UPDATE users 
+       SET password = $1, 
+           password_is_temporary = FALSE,
+           password_changed_at = $2,
+           updated_at = CURRENT_TIMESTAMP
+       WHERE id = $3`,
+      [hashedPassword, passwordChangedAt, userId]
     );
 
     console.log('✅ Mot de passe changé pour:', user.email);
 
-    // Optionnel: Générer un nouveau token avec password_is_temporary = false
+    // Générer un nouveau token avec password_is_temporary = false
     const newToken = jwt.sign(
       {
         userId: user.id,
@@ -602,6 +629,53 @@ app.post('/api/auth/change-password', authenticateToken, async (req, res) => {
       JWT_SECRET,
       { expiresIn: '24h' }
     );
+
+    // Envoyer un email de confirmation
+    const emailHtml = `
+      <!DOCTYPE html>
+      <html>
+      <head>
+        <meta charset="UTF-8">
+        <style>
+          body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; max-width: 600px; margin: 0 auto; padding: 20px; }
+          .header { background: #10b981; color: white; padding: 20px; text-align: center; border-radius: 8px 8px 0 0; }
+          .content { background: #f8fafc; padding: 30px; border: 1px solid #e5e7eb; border-top: none; border-radius: 0 0 8px 8px; }
+          .success { background: #d1fae5; border: 1px solid #10b981; color: #065f46; padding: 15px; border-radius: 5px; margin: 20px 0; }
+          .footer { margin-top: 30px; padding-top: 20px; border-top: 1px solid #e5e7eb; color: #6b7280; font-size: 12px; text-align: center; }
+        </style>
+      </head>
+      <body>
+        <div class="header">
+          <h2>✅ Mot de passe modifié avec succès</h2>
+        </div>
+        <div class="content">
+          <div class="success">
+            <p><strong>Votre mot de passe a été modifié avec succès.</strong></p>
+          </div>
+          <p>Bonjour,</p>
+          <p>Nous vous confirmons que le mot de passe de votre compte <strong>RH Manager</strong> a été modifié avec succès.</p>
+          <p><strong>Détails de l'opération :</strong></p>
+          <ul>
+            <li>Date : ${new Date().toLocaleDateString('fr-FR')}</li>
+            <li>Heure : ${new Date().toLocaleTimeString('fr-FR')}</li>
+            <li>Email du compte : ${user.email}</li>
+          </ul>
+          <p>Si vous n'êtes pas à l'origine de cette modification, veuillez contacter immédiatement l'administrateur du système.</p>
+          <p>Cordialement,<br>L'équipe RH Manager</p>
+        </div>
+        <div class="footer">
+          <p>Ceci est un message automatique, merci de ne pas y répondre.</p>
+          <p>© ${new Date().getFullYear()} RH Manager - Tous droits réservés</p>
+        </div>
+      </body>
+      </html>
+    `;
+
+    try {
+      await sendEmail(user.email, 'Confirmation de changement de mot de passe - RH Manager', emailHtml);
+    } catch (emailError) {
+      console.warn('⚠️ Impossible d\'envoyer l\'email de confirmation:', emailError.message);
+    }
 
     res.json({
       success: true,
@@ -1347,6 +1421,7 @@ app.get('/', (req, res) => {
       'GET  /api/health',
       'POST /api/auth/login',
       'POST /api/auth/send-new-password',
+      'POST /api/auth/change-password',
       'GET  /api/employees',
       'GET  /api/employees/archives',
       'GET  /api/employees/search?q=nom',
@@ -1465,7 +1540,6 @@ app.post('/api/auth/login', async (req, res) => {
           {
             userId: user.id,
             email: user.email,
-            // Ajouter l'info si le mot de passe est temporaire dans le token
             passwordIsTemporary: user.password_is_temporary || false
           },
           JWT_SECRET,
@@ -1505,133 +1579,6 @@ app.post('/api/auth/login', async (req, res) => {
     });
   }
 });
-
-
-// Route pour changer le mot de passe
-app.post('/api/auth/change-password', authenticateToken, async (req, res) => {
-  try {
-    const { currentPassword, newPassword } = req.body;
-    const userId = req.user.userId;
-
-    console.log('🔐 Changement de mot de passe pour utilisateur ID:', userId);
-
-    if (!currentPassword || !newPassword) {
-      return res.status(400).json({
-        success: false,
-        message: 'Mot de passe actuel et nouveau mot de passe requis'
-      });
-    }
-
-    if (newPassword.length < 6) {
-      return res.status(400).json({
-        success: false,
-        message: 'Le nouveau mot de passe doit contenir au moins 6 caractères'
-      });
-    }
-
-    // Récupérer l'utilisateur
-    const userResult = await pool.query(
-      'SELECT * FROM users WHERE id = $1',
-      [userId]
-    );
-
-    if (userResult.rows.length === 0) {
-      return res.status(404).json({
-        success: false,
-        message: 'Utilisateur non trouvé'
-      });
-    }
-
-    const user = userResult.rows[0];
-
-    // Vérifier le mot de passe actuel
-    const isCurrentPasswordValid = await bcrypt.compare(currentPassword, user.password);
-
-    if (!isCurrentPasswordValid) {
-      return res.status(401).json({
-        success: false,
-        message: 'Mot de passe actuel incorrect'
-      });
-    }
-
-    // Hasher le nouveau mot de passe
-    const hashedPassword = await bcrypt.hash(newPassword, 10);
-
-    // Mettre à jour le mot de passe et marquer comme non temporaire
-    await pool.query(
-      `UPDATE users 
-       SET password = $1, 
-           password_is_temporary = FALSE,
-           password_changed_at = CURRENT_TIMESTAMP,
-           updated_at = CURRENT_TIMESTAMP
-       WHERE id = $2`,
-      [hashedPassword, userId]
-    );
-
-    console.log('✅ Mot de passe changé pour:', user.email);
-
-    // Envoyer un email de confirmation
-    const emailHtml = `
-      <!DOCTYPE html>
-      <html>
-      <head>
-        <meta charset="UTF-8">
-        <style>
-          body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; max-width: 600px; margin: 0 auto; padding: 20px; }
-          .header { background: #10b981; color: white; padding: 20px; text-align: center; border-radius: 8px 8px 0 0; }
-          .content { background: #f8fafc; padding: 30px; border: 1px solid #e5e7eb; border-top: none; border-radius: 0 0 8px 8px; }
-          .success { background: #d1fae5; border: 1px solid #10b981; color: #065f46; padding: 15px; border-radius: 5px; margin: 20px 0; }
-          .footer { margin-top: 30px; padding-top: 20px; border-top: 1px solid #e5e7eb; color: #6b7280; font-size: 12px; text-align: center; }
-        </style>
-      </head>
-      <body>
-        <div class="header">
-          <h2>✅ Mot de passe modifié avec succès</h2>
-        </div>
-        <div class="content">
-          <div class="success">
-            <p><strong>Votre mot de passe a été modifié avec succès.</strong></p>
-          </div>
-          <p>Bonjour,</p>
-          <p>Nous vous confirmons que le mot de passe de votre compte <strong>RH Manager</strong> a été modifié avec succès.</p>
-          <p><strong>Détails de l'opération :</strong></p>
-          <ul>
-            <li>Date : ${new Date().toLocaleDateString('fr-FR')}</li>
-            <li>Heure : ${new Date().toLocaleTimeString('fr-FR')}</li>
-            <li>Email du compte : ${user.email}</li>
-          </ul>
-          <p>Si vous n'êtes pas à l'origine de cette modification, veuillez contacter immédiatement l'administrateur du système.</p>
-          <p>Cordialement,<br>L'équipe RH Manager</p>
-        </div>
-        <div class="footer">
-          <p>Ceci est un message automatique, merci de ne pas y répondre.</p>
-          <p>© ${new Date().getFullYear()} RH Manager - Tous droits réservés</p>
-        </div>
-      </body>
-      </html>
-    `;
-
-    try {
-      await sendEmail(user.email, 'Confirmation de changement de mot de passe - RH Manager', emailHtml);
-    } catch (emailError) {
-      console.warn('⚠️ Impossible d\'envoyer l\'email de confirmation:', emailError.message);
-    }
-
-    res.json({
-      success: true,
-      message: 'Mot de passe changé avec succès'
-    });
-
-  } catch (error) {
-    console.error('❌ Erreur changement mot de passe:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Erreur lors du changement de mot de passe'
-    });
-  }
-});
-
-
 
 // =========================
 // Routes Employés
