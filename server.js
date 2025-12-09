@@ -610,13 +610,9 @@ app.get('/api/archive-pdfs/:filename', (req, res) => {
 app.put('/api/employees/:id/archive', authenticateToken, async (req, res) => {
   try {
     const { id } = req.params;
-    const { pdf_url, entretien_depart, date_depart } = req.body; // <-- Ajout de date_depart
+    const { pdf_url, entretien_depart } = req.body;
 
-    console.log('📁 Archivage employé ID:', id, 'avec:', {
-      pdf_url,
-      entretien_depart,
-      date_depart
-    });
+    console.log('📁 Archivage employé ID:', id, 'avec PDF:', pdf_url);
 
     if (!pdf_url) {
       return res.status(400).json({
@@ -624,42 +620,18 @@ app.put('/api/employees/:id/archive', authenticateToken, async (req, res) => {
       });
     }
 
-    // Validation de la date
-    let departureDate = date_depart;
-    if (!departureDate || departureDate.trim() === '') {
-      // Si aucune date n'est fournie, utiliser la date actuelle
-      departureDate = new Date().toISOString().split('T')[0];
-      console.log('📅 Utilisation date actuelle par défaut:', departureDate);
-    }
-
-    // Valider que la date est valide
-    const parsedDate = new Date(departureDate);
-    if (isNaN(parsedDate.getTime())) {
-      return res.status(400).json({
-        error: 'La date de départ fournie n\'est pas valide'
-      });
-    }
-
-    // Formater la date au format YYYY-MM-DD pour PostgreSQL
-    const formattedDate = parsedDate.toISOString().split('T')[0];
-
     const result = await pool.query(
       `
       UPDATE employees 
-      SET date_depart = $1,  // <-- Utilise la date fournie par l'utilisateur
-          entretien_depart = $2,
-          pdf_archive_url = $3,
+      SET date_depart = CURRENT_DATE, 
+          entretien_depart = $1,
+          pdf_archive_url = $2,
           statut = 'archive',
           updated_at = CURRENT_TIMESTAMP
-      WHERE id = $4
+      WHERE id = $3
       RETURNING *
     `,
-      [
-        formattedDate, // <-- Date fournie par l'utilisateur
-        entretien_depart || 'Entretien de départ terminé', 
-        pdf_url, 
-        id
-      ]
+      [entretien_depart || 'Entretien de départ terminé', pdf_url, id]
     );
 
     if (result.rows.length === 0) {
@@ -668,11 +640,7 @@ app.put('/api/employees/:id/archive', authenticateToken, async (req, res) => {
       });
     }
 
-    console.log('✅ Employé archivé avec succès:', {
-      date_depart: formattedDate,
-      pdf_url: pdf_url
-    });
-    
+    console.log('✅ Employé archivé avec PDF');
     res.json(result.rows[0]);
   } catch (error) {
     console.error("❌ Erreur archivage:", error);
