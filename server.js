@@ -1530,6 +1530,8 @@ app.put('/api/employees/:id', authenticateToken, async (req, res) => {
       prenom,
       cin,
       passeport,
+      date_emission_passport,      
+      date_expiration_passport, 
       date_naissance,
       poste,
       site_dep,
@@ -1575,12 +1577,13 @@ app.put('/api/employees/:id', authenticateToken, async (req, res) => {
       `
       UPDATE employees 
       SET matricule = $1, nom = $2, prenom = $3, cin = $4, passeport = $5,
-          date_naissance = $6, poste = $7, site_dep = $8, type_contrat = $9,
-          date_debut = $10, salaire_brute = $11, photo = $12, dossier_rh = $13,
-          date_depart = $14, pdf_archive_url = $15, 
-          adresse_mail = $16, mail_responsable1 = $17, mail_responsable2 = $18,
+          date_emission_passport = $6, date_expiration_passport = $7,
+          date_naissance = $8, poste = $9, site_dep = $10, type_contrat = $11,
+          date_debut = $12, salaire_brute = $13, photo = $14, dossier_rh = $15,
+          date_depart = $16, pdf_archive_url = $17, 
+          adresse_mail = $18, mail_responsable1 = $19, mail_responsable2 = $20,
           updated_at = CURRENT_TIMESTAMP
-      WHERE id = $19
+      WHERE id = $21
       RETURNING *
     `,
       [
@@ -1589,6 +1592,8 @@ app.put('/api/employees/:id', authenticateToken, async (req, res) => {
         prenom,
         cin,
         passeport,
+        date_emission_passport || null,    // NOUVEAU
+        date_expiration_passport || null,  // NOUVEAU
         date_naissance,
         poste,
         site_dep,
@@ -1633,6 +1638,8 @@ app.post('/api/employees', authenticateToken, async (req, res) => {
       prenom,
       cin,
       passeport,
+      date_emission_passport,
+      date_expiration_passport,   
       date_naissance,
       poste,
       site_dep,
@@ -1687,13 +1694,14 @@ app.post('/api/employees', authenticateToken, async (req, res) => {
       photoUrl = getDefaultAvatar(nom, prenom);
     }
 
-    const result = await pool.query(
+      const result = await pool.query(
       `
       INSERT INTO employees 
-      (matricule, nom, prenom, cin, passeport, date_naissance, poste, 
-       site_dep, type_contrat, date_debut, salaire_brute, photo, dossier_rh, 
+      (matricule, nom, prenom, cin, passeport, 
+       date_emission_passport, date_expiration_passport,  -- NOUVEAU
+       date_naissance, poste, site_dep, type_contrat, date_debut, salaire_brute, photo, dossier_rh, 
        adresse_mail, mail_responsable1, mail_responsable2, statut) 
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, 'actif')
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, 'actif')
       RETURNING *
     `,
       [
@@ -1702,6 +1710,8 @@ app.post('/api/employees', authenticateToken, async (req, res) => {
         prenom,
         cin,
         passeport || null,
+        date_emission_passport || null,    // NOUVEAU
+        date_expiration_passport || null,  // NOUVEAU
         date_naissance,
         poste,
         site_dep,
