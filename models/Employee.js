@@ -21,7 +21,7 @@ export const Employee = {
 
   async update(id, employeeData) {
     const {
-      matricule, nom, prenom, cin, passeport, date_naissance,
+      matricule, nom, prenom, cin, passeport, date_emission_passport, date_expiration_passport, date_naissance,
       poste, site_dep, type_contrat, date_debut, salaire_brute,
       photo, dossier_rh
     } = employeeData;
@@ -29,14 +29,17 @@ export const Employee = {
     const result = await pool.query(
       `UPDATE employees SET 
         matricule = $1, nom = $2, prenom = $3, cin = $4, passeport = $5,
-        date_naissance = $6, poste = $7, site_dep = $8, type_contrat = $9,
-        date_debut = $10, salaire_brute = $11, photo = $12, dossier_rh = $13,
+        date_emission_passport = $6, date_expiration_passport = $7, // NOUVEAU
+        date_naissance = $8, poste = $9, site_dep = $10, type_contrat = $11,
+        date_debut = $12, salaire_brute = $13, photo = $14, dossier_rh = $15,
         updated_at = CURRENT_TIMESTAMP
-       WHERE id = $14 RETURNING *`,
+       WHERE id = $16 RETURNING *`,
       [
-        matricule, nom, prenom, cin, passeport, date_naissance,
-        poste, site_dep, type_contrat, date_debut, salaire_brute,
-        photo, dossier_rh, id
+        matricule, nom, prenom, cin, passeport,
+        date_emission_passport || null, date_expiration_passport || null, // NOUVEAU
+        date_naissance, poste, site_dep, type_contrat, 
+        date_debut, salaire_brute, photo, dossier_rh, 
+        id
       ]
     );
     return result.rows[0];
