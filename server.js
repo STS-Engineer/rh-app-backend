@@ -610,9 +610,9 @@ app.get('/api/archive-pdfs/:filename', (req, res) => {
 app.put('/api/employees/:id/archive', authenticateToken, async (req, res) => {
   try {
     const { id } = req.params;
-    const { pdf_url, entretien_depart } = req.body;
+    const { pdf_url, entretien_depart, date_depart } = req.body; // <-- Ajouter date_depart
 
-    console.log('📁 Archivage employé ID:', id, 'avec PDF:', pdf_url);
+    console.log('📁 Archivage employé ID:', id, 'avec PDF:', pdf_url, 'Date départ:', date_depart);
 
     if (!pdf_url) {
       return res.status(400).json({
@@ -620,18 +620,32 @@ app.put('/api/employees/:id/archive', authenticateToken, async (req, res) => {
       });
     }
 
+    if (!date_depart) {
+      return res.status(400).json({
+        error: 'La date de départ est obligatoire pour l\'archivage'
+      });
+    }
+
+    // Valider que la date est au format valide
+    const dateDepart = new Date(date_depart);
+    if (isNaN(dateDepart.getTime())) {
+      return res.status(400).json({
+        error: 'Format de date de départ invalide'
+      });
+    }
+
     const result = await pool.query(
       `
       UPDATE employees 
-      SET date_depart = CURRENT_DATE, 
-          entretien_depart = $1,
-          pdf_archive_url = $2,
+      SET date_depart = $1,  // <-- Utiliser la date fournie par l'utilisateur
+          entretien_depart = $2,
+          pdf_archive_url = $3,
           statut = 'archive',
           updated_at = CURRENT_TIMESTAMP
-      WHERE id = $3
+      WHERE id = $4
       RETURNING *
     `,
-      [entretien_depart || 'Entretien de départ terminé', pdf_url, id]
+      [date_depart, entretien_depart || 'Entretien de départ terminé', pdf_url, id]
     );
 
     if (result.rows.length === 0) {
@@ -640,7 +654,7 @@ app.put('/api/employees/:id/archive', authenticateToken, async (req, res) => {
       });
     }
 
-    console.log('✅ Employé archivé avec PDF');
+    console.log('✅ Employé archivé avec PDF et date:', date_depart);
     res.json(result.rows[0]);
   } catch (error) {
     console.error("❌ Erreur archivage:", error);
