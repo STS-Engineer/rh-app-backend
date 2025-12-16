@@ -12,6 +12,7 @@ const fs = require('fs');
 const PDFKitDocument = require('pdfkit');
 const crypto = require('crypto');
 const nodemailer = require('nodemailer');
+const { PDFDocument } = require('pdf-lib'); 
 
 const app = express();
 const PORT = Number(process.env.PORT || 5000);
@@ -94,7 +95,7 @@ if (!process.env.JWT_SECRET) {
 }
 
 // =========================
-// Middleware globaux
+// CORS MANUEL
 // =========================
 
 const allowedOrigins = [
@@ -106,21 +107,40 @@ if (process.env.FRONTEND_URL && !allowedOrigins.includes(process.env.FRONTEND_UR
   allowedOrigins.push(process.env.FRONTEND_URL);
 }
 
-const corsOptions = {
-  origin(origin, callback) {
-    if (!origin) return callback(null, true);
-    if (allowedOrigins.includes(origin)) {
-      return callback(null, true);
-    } else {
-      console.warn('🚫 Origin non autorisée par CORS:', origin);
-      return callback(null, false);
+// Middleware CORS manuel
+app.use((req, res, next) => {
+  const origin = req.headers.origin;
+  
+  // Autoriser les requêtes sans origine (comme Postman)
+  if (!origin) {
+    return next();
+  }
+  
+  // Vérifier si l'origine est autorisée
+  if (allowedOrigins.includes(origin)) {
+    // Définir les headers CORS
+    res.header('Access-Control-Allow-Origin', origin);
+    res.header('Access-Control-Allow-Credentials', 'true');
+    res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS, PATCH');
+    res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Authorization, X-CSRF-Token');
+    res.header('Access-Control-Expose-Headers', 'Content-Length, Content-Range');
+    
+    // Gérer les requêtes preflight OPTIONS
+    if (req.method === 'OPTIONS') {
+      res.header('Access-Control-Max-Age', '86400'); // 24 heures
+      return res.status(200).end();
     }
-  },
-  credentials: true
-};
+  } else {
+    console.warn('🚫 Origin non autorisée par CORS:', origin);
+  }
+  
+  next();
+});
 
-app.use(cors(corsOptions));
-app.options('*', cors(corsOptions));
+// =========================
+// Middleware globaux
+// =========================
+
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
@@ -285,13 +305,13 @@ const authenticateToken = (req, res, next) => {
   const token = authHeader && authHeader.split(' ')[1];
 
   if (token == null) {
-    return res.sendStatus(401);
+    return res.status(401).json({ error: 'Token d\'authentification manquant' });
   }
 
   jwt.verify(token, JWT_SECRET, (err, user) => {
     if (err) {
       console.error('❌ Erreur vérification token:', err.message);
-      return res.sendStatus(403);
+      return res.status(403).json({ error: 'Token invalide ou expiré' });
     }
     req.user = user;
     next();
@@ -399,6 +419,10 @@ async function sendEmail(to, subject, html) {
 
 // Route pour envoyer un nouveau mot de passe directement par email
 app.post('/api/auth/send-new-password', async (req, res) => {
+  // Ajouter les headers CORS manuellement
+  res.header('Access-Control-Allow-Origin', req.headers.origin || '*');
+  res.header('Access-Control-Allow-Credentials', 'true');
+  
   try {
     const { email } = req.body;
     
@@ -522,7 +546,7 @@ app.post('/api/auth/send-new-password', async (req, res) => {
     console.error('❌ Erreur envoi nouveau mot de passe:', error);
     res.status(500).json({
       success: false,
-      message: 'Erreur lors de l\'envoi du nouveau mot de passe'
+      message: 'Erreur lors de l'envoi du nouveau mot de passe'
     });
   }
 });
@@ -537,6 +561,10 @@ app.post(
   authenticateToken,
   archivePdfUpload.single('pdfFile'),
   async (req, res) => {
+    // Headers CORS
+    res.header('Access-Control-Allow-Origin', req.headers.origin || '*');
+    res.header('Access-Control-Allow-Credentials', 'true');
+    
     try {
       console.log('📄 ========== UPLOAD PDF ARCHIVE ==========');
       
@@ -585,6 +613,9 @@ app.post(
 
 // Route pour servir les PDF d'archive
 app.get('/api/archive-pdfs/:filename', (req, res) => {
+  // Headers CORS
+  res.header('Access-Control-Allow-Origin', req.headers.origin || '*');
+  
   try {
     const filename = req.params.filename;
     const filePath = path.join(archivePdfDir, filename);
@@ -608,6 +639,10 @@ app.get('/api/archive-pdfs/:filename', (req, res) => {
 
 // Mise à jour de la route d'archivage - VERSION CORRIGÉE
 app.put('/api/employees/:id/archive', authenticateToken, async (req, res) => {
+  // Headers CORS
+  res.header('Access-Control-Allow-Origin', req.headers.origin || '*');
+  res.header('Access-Control-Allow-Credentials', 'true');
+  
   try {
     const { id } = req.params;
     const { pdf_url, entretien_depart, date_depart } = req.body;
@@ -711,6 +746,10 @@ app.post(
   authenticateToken,
   employeePhotoUpload.single('photo'),
   async (req, res) => {
+    // Headers CORS
+    res.header('Access-Control-Allow-Origin', req.headers.origin || '*');
+    res.header('Access-Control-Allow-Credentials', 'true');
+    
     try {
       console.log('📸 ========== UPLOAD PHOTO EMPLOYÉ ==========');
       
@@ -767,6 +806,9 @@ app.post(
 
 // Route pour servir les photos d'employés
 app.get('/api/employee-photos/:filename', (req, res) => {
+  // Headers CORS
+  res.header('Access-Control-Allow-Origin', req.headers.origin || '*');
+  
   try {
     const filename = req.params.filename;
     const filePath = path.join(employeePhotoDir, filename);
@@ -805,6 +847,10 @@ app.post(
   '/api/dossier-rh/upload-photos',
   authenticateToken,
   (req, res, next) => {
+    // Headers CORS
+    res.header('Access-Control-Allow-Origin', req.headers.origin || '*');
+    res.header('Access-Control-Allow-Credentials', 'true');
+    
     console.log('📸 Requête reçue sur /api/dossier-rh/upload-photos');
     next();
   },
@@ -842,16 +888,20 @@ app.post(
   }
 );
 
-// Générer le PDF et le stocker localement
+// Générer le PDF et le stocker localement - VERSION AVEC FUSION
 app.post(
   '/api/dossier-rh/generate-pdf/:employeeId',
   authenticateToken,
   async (req, res) => {
+    // Headers CORS
+    res.header('Access-Control-Allow-Origin', req.headers.origin || '*');
+    res.header('Access-Control-Allow-Credentials', 'true');
+    
     try {
       const { employeeId } = req.params;
-      const { photos: clientPhotos, dossierName } = req.body;
+      const { photos: clientPhotos, dossierName, actionType = 'new' } = req.body;
 
-      console.log('📄 Génération PDF pour employé:', employeeId, 'dossier:', dossierName);
+      console.log('📄 Génération PDF pour employé:', employeeId, 'dossier:', dossierName, 'action:', actionType);
 
       if (!dossierName || !dossierName.trim()) {
         return res.status(400).json({ error: 'Nom de dossier manquant' });
@@ -889,9 +939,67 @@ app.post(
         });
       }
 
+      // Fonction pour télécharger un PDF depuis une URL
+      const downloadPDFFromUrl = async (url) => {
+        try {
+          console.log('📥 Téléchargement PDF depuis:', url);
+          
+          // Si c'est une URL locale (sert par notre backend)
+          if (url.includes('/api/pdfs/')) {
+            const filename = url.split('/api/pdfs/')[1];
+            const filePath = path.join(pdfStorageDir, filename);
+            if (fs.existsSync(filePath)) {
+              return fs.readFileSync(filePath);
+            }
+          }
+          
+          // Si c'est une URL Azure Blob Storage ou autre URL externe
+          if (url.startsWith('http')) {
+            const response = await fetch(url);
+            if (!response.ok) {
+              throw new Error(`Erreur téléchargement: ${response.status}`);
+            }
+            const buffer = await response.arrayBuffer();
+            return Buffer.from(buffer);
+          }
+          
+          return null;
+        } catch (error) {
+          console.error('❌ Erreur téléchargement PDF:', error);
+          return null;
+        }
+      };
+
+      // Fonction pour fusionner des PDF
+      const mergePDFs = async (existingPDFBuffer, newPDFBuffer) => {
+        try {
+          console.log('🔄 Fusion des PDF...');
+          
+          const mergedPdf = await PDFDocument.create();
+          
+          // Ajouter les pages du PDF existant
+          if (existingPDFBuffer) {
+            const existingPdf = await PDFDocument.load(existingPDFBuffer);
+            const existingPages = await mergedPdf.copyPages(existingPdf, existingPdf.getPageIndices());
+            existingPages.forEach(page => mergedPdf.addPage(page));
+          }
+          
+          // Ajouter les pages du nouveau PDF
+          const newPdf = await PDFDocument.load(newPDFBuffer);
+          const newPages = await mergedPdf.copyPages(newPdf, newPdf.getPageIndices());
+          newPages.forEach(page => mergedPdf.addPage(page));
+          
+          const mergedBytes = await mergedPdf.save();
+          return Buffer.from(mergedBytes);
+        } catch (error) {
+          console.error('❌ Erreur fusion PDF:', error);
+          throw error;
+        }
+      };
+
       // Fonction pour générer et sauvegarder le PDF
-      const generateAndSavePDF = (employee, photos, dossierName) => {
-        return new Promise((resolve, reject) => {
+      const generateAndSavePDF = async (employee, photos, dossierName, actionType) => {
+        return new Promise(async (resolve, reject) => {
           try {
             console.log('🧾 Début génération PDF avec pdfkit...');
             const doc = new PDFKitDocument({ size: 'A4', margin: 50 });
@@ -905,25 +1013,42 @@ app.post(
 
             doc.on('end', async () => {
               try {
-                const pdfBuffer = Buffer.concat(buffers);
+                const newPdfBuffer = Buffer.concat(buffers);
+                let finalPdfBuffer = newPdfBuffer;
+                let isMerged = false;
+                
+                // Si l'employé a déjà un dossier RH et qu'on veut ajouter
+                if (employee.dossier_rh && actionType === 'add') {
+                  console.log('🔄 Tentative de fusion avec le PDF existant...');
+                  const existingPdfBuffer = await downloadPDFFromUrl(employee.dossier_rh);
+                  
+                  if (existingPdfBuffer) {
+                    finalPdfBuffer = await mergePDFs(existingPdfBuffer, newPdfBuffer);
+                    isMerged = true;
+                    console.log('✅ PDF fusionné avec succès');
+                  } else {
+                    console.log('⚠️ Impossible de télécharger le PDF existant, création d\'un nouveau');
+                  }
+                }
+                
                 const fileName = `dossier-${employee.matricule || 'EMP'}-${Date.now()}.pdf`;
                 console.log('💾 Sauvegarde locale du fichier:', fileName);
                 
                 const filePath = path.join(pdfStorageDir, fileName);
-                fs.writeFileSync(filePath, pdfBuffer);
+                fs.writeFileSync(filePath, finalPdfBuffer);
                 
                 const baseUrl = process.env.BACKEND_URL || 'https://backend-rh.azurewebsites.net';
                 const pdfUrl = `${baseUrl}/api/pdfs/${fileName}`;
                 
                 console.log('✅ PDF sauvegardé localement:', pdfUrl);
-                resolve(pdfUrl);
+                resolve({ pdfUrl, fileName, isMerged });
               } catch (saveError) {
                 console.error('❌ Erreur sauvegarde locale:', saveError);
                 reject(saveError);
               }
             });
 
-            // Contenu du PDF
+            // Contenu du PDF - Page de garde avec métadonnées
             doc.fontSize(24).text('DOSSIER RH', { align: 'left' });
             doc.moveDown(2);
 
@@ -937,9 +1062,9 @@ app.post(
             doc.moveDown(0.5);
             doc.fontSize(14).text(`Nom du dossier : ${dossierName || '-'}`);
             doc.moveDown(0.5);
-            doc
-              .fontSize(12)
-              .text(`Date de génération : ${new Date().toLocaleDateString('fr-FR')}`);
+            doc.fontSize(12).text(`Type d'ajout : ${actionType === 'add' ? 'Ajout de documents' : 'Nouveau dossier'}`);
+            doc.moveDown(0.5);
+            doc.fontSize(12).text(`Date de génération : ${new Date().toLocaleDateString('fr-FR')} ${new Date().toLocaleTimeString('fr-FR')}`);
             doc.addPage();
 
             // Pages des photos
@@ -962,7 +1087,11 @@ app.post(
 
                   doc
                     .fontSize(12)
-                    .text(`Photo : ${photo.originalname || photo.filename}`, 50, 50);
+                    .text(`Document : ${photo.originalname || photo.filename}`, 50, 50);
+                  
+                  doc
+                    .fontSize(10)
+                    .text(`Date d'ajout : ${new Date().toLocaleDateString('fr-FR')}`, 50, 70);
 
                   doc.image(photo.path, {
                     fit: [maxWidth, maxHeight],
@@ -972,7 +1101,7 @@ app.post(
                     y: 100
                   });
 
-                  console.log('📄 Photo ajoutée au PDF:', photo.path);
+                  console.log('📄 Document ajouté au PDF:', photo.path);
                 } catch (imageError) {
                   console.error(
                     `❌ Erreur avec la photo ${photo.filename}:`,
@@ -990,7 +1119,7 @@ app.post(
         });
       };
 
-      const pdfUrl = await generateAndSavePDF(employee, photos, dossierName);
+      const { pdfUrl, isMerged } = await generateAndSavePDF(employee, photos, dossierName, actionType);
 
       const updateResult = await pool.query(
         'UPDATE employees SET dossier_rh = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2 RETURNING *',
@@ -1015,8 +1144,10 @@ app.post(
 
       res.json({
         success: true,
-        message: 'Dossier RH généré avec succès',
+        message: isMerged ? 'Documents ajoutés au dossier existant' : 'Dossier RH généré avec succès',
         pdfUrl: pdfUrl,
+        actionType: actionType,
+        isMerged: isMerged,
         employee: updateResult.rows[0]
       });
     } catch (error) {
@@ -1032,8 +1163,81 @@ app.post(
   }
 );
 
+// Route pour supprimer le dossier RH d'un employé
+app.delete('/api/employees/:id/dossier-rh', authenticateToken, async (req, res) => {
+  // Headers CORS
+  res.header('Access-Control-Allow-Origin', req.headers.origin || '*');
+  res.header('Access-Control-Allow-Credentials', 'true');
+  
+  try {
+    const { id } = req.params;
+    console.log('🗑️ Suppression dossier RH pour employé ID:', id);
+
+    // Récupérer l'employé pour avoir l'URL du PDF
+    const employeeResult = await pool.query(
+      'SELECT id, matricule, dossier_rh FROM employees WHERE id = $1',
+      [id]
+    );
+
+    if (employeeResult.rows.length === 0) {
+      return res.status(404).json({
+        success: false,
+        error: 'Employé non trouvé'
+      });
+    }
+
+    const employee = employeeResult.rows[0];
+
+    if (!employee.dossier_rh) {
+      return res.status(400).json({
+        success: false,
+        error: "Aucun dossier RH n'existe pour cet employé"
+      });
+    }
+
+    // Supprimer le fichier physique si c'est un fichier local
+    if (employee.dossier_rh.includes('/api/pdfs/')) {
+      try {
+        const filename = employee.dossier_rh.split('/api/pdfs/')[1];
+        const filePath = path.join(pdfStorageDir, filename);
+        
+        if (fs.existsSync(filePath)) {
+          fs.unlinkSync(filePath);
+          console.log('✅ Fichier PDF supprimé:', filePath);
+        }
+      } catch (fileError) {
+        console.warn('⚠️ Impossible de supprimer le fichier physique:', fileError.message);
+      }
+    }
+
+    // Mettre à jour la base de données pour supprimer le lien
+    const updateResult = await pool.query(
+      'UPDATE employees SET dossier_rh = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = $1 RETURNING *',
+      [id]
+    );
+
+    console.log('✅ Dossier RH supprimé pour employé:', employee.matricule);
+
+    res.json({
+      success: true,
+      message: 'Dossier RH supprimé avec succès',
+      employee: updateResult.rows[0]
+    });
+  } catch (error) {
+    console.error('❌ Erreur suppression dossier RH:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Erreur lors de la suppression du dossier RH',
+      details: error.message
+    });
+  }
+});
+
 // Route pour servir les PDF
 app.get('/api/pdfs/:filename', (req, res) => {
+  // Headers CORS
+  res.header('Access-Control-Allow-Origin', req.headers.origin || '*');
+  
   try {
     const filename = req.params.filename;
     const filePath = path.join(pdfStorageDir, filename);
@@ -1056,7 +1260,6 @@ app.get('/api/pdfs/:filename', (req, res) => {
 // Routes Fiche de Paie
 // =========================
 
-const { PDFDocument } = require('pdf-lib');
 const pdfParse = require('pdf-parse');
 
 // Fonction pour extraire le matricule d'une page PDF
@@ -1157,6 +1360,10 @@ app.post(
   authenticateToken,
   uploadPaie.single('pdfFile'),
   async (req, res) => {
+    // Headers CORS
+    res.header('Access-Control-Allow-Origin', req.headers.origin || '*');
+    res.header('Access-Control-Allow-Credentials', 'true');
+    
     console.log('📄 Traitement des fiches de paie...');
     
     if (!req.file) {
@@ -1301,6 +1508,9 @@ app.post(
 
 // Route racine
 app.get('/', (req, res) => {
+  // Headers CORS
+  res.header('Access-Control-Allow-Origin', req.headers.origin || '*');
+  
   res.json({
     message: '🚀 API RH Manager - Connecté à Azure PostgreSQL',
     timestamp: new Date().toISOString(),
@@ -1328,6 +1538,7 @@ app.get('/', (req, res) => {
       'DELETE /api/demandes/:id',
       'POST /api/dossier-rh/upload-photos',
       'POST /api/dossier-rh/generate-pdf/:employeeId',
+      'DELETE /api/employees/:id/dossier-rh',
       'GET  /api/pdfs/:filename',
       'POST /api/fiche-paie/process'
     ]
@@ -1336,6 +1547,9 @@ app.get('/', (req, res) => {
 
 // Health check
 app.get('/api/health', async (req, res) => {
+  // Headers CORS
+  res.header('Access-Control-Allow-Origin', req.headers.origin || '*');
+  
   try {
     console.log('🏥 Health check - Tentative de connexion à la base...');
 
@@ -1387,6 +1601,10 @@ app.get('/api/health', async (req, res) => {
 // =========================
 
 app.post('/api/auth/login', async (req, res) => {
+  // Headers CORS
+  res.header('Access-Control-Allow-Origin', req.headers.origin || '*');
+  res.header('Access-Control-Allow-Credentials', 'true');
+  
   try {
     console.log('🔐 Tentative de login:', { email: req.body.email });
 
@@ -1471,6 +1689,10 @@ app.post('/api/auth/login', async (req, res) => {
 // =========================
 
 app.get('/api/employees', authenticateToken, async (req, res) => {
+  // Headers CORS
+  res.header('Access-Control-Allow-Origin', req.headers.origin || '*');
+  res.header('Access-Control-Allow-Credentials', 'true');
+  
   try {
     console.log('👥 Récupération des employés actifs');
 
@@ -1492,6 +1714,10 @@ app.get('/api/employees', authenticateToken, async (req, res) => {
 });
 
 app.get('/api/employees/archives', authenticateToken, async (req, res) => {
+  // Headers CORS
+  res.header('Access-Control-Allow-Origin', req.headers.origin || '*');
+  res.header('Access-Control-Allow-Credentials', 'true');
+  
   try {
     console.log('📁 Récupération des employés archivés');
 
@@ -1513,6 +1739,10 @@ app.get('/api/employees/archives', authenticateToken, async (req, res) => {
 });
 
 app.get('/api/employees/search', authenticateToken, async (req, res) => {
+  // Headers CORS
+  res.header('Access-Control-Allow-Origin', req.headers.origin || '*');
+  res.header('Access-Control-Allow-Credentials', 'true');
+  
   try {
     const { q, statut = 'actif' } = req.query;
     console.log('🔍 Recherche employés:', { q, statut });
@@ -1549,6 +1779,10 @@ app.get('/api/employees/search', authenticateToken, async (req, res) => {
 });
 
 app.get('/api/employees/:id', authenticateToken, async (req, res) => {
+  // Headers CORS
+  res.header('Access-Control-Allow-Origin', req.headers.origin || '*');
+  res.header('Access-Control-Allow-Credentials', 'true');
+  
   try {
     const { id } = req.params;
     console.log('👤 Récupération employé ID:', id);
@@ -1574,6 +1808,10 @@ app.get('/api/employees/:id', authenticateToken, async (req, res) => {
 });
 
 app.put('/api/employees/:id', authenticateToken, async (req, res) => {
+  // Headers CORS
+  res.header('Access-Control-Allow-Origin', req.headers.origin || '*');
+  res.header('Access-Control-Allow-Credentials', 'true');
+  
   try {
     const { id } = req.params;
     console.log('✏️ Mise à jour employé ID:', id);
@@ -1683,6 +1921,10 @@ app.put('/api/employees/:id', authenticateToken, async (req, res) => {
 });
 
 app.post('/api/employees', authenticateToken, async (req, res) => {
+  // Headers CORS
+  res.header('Access-Control-Allow-Origin', req.headers.origin || '*');
+  res.header('Access-Control-Allow-Credentials', 'true');
+  
   try {
     console.log('➕ Création nouvel employé');
 
@@ -1818,6 +2060,10 @@ app.post('/api/employees', authenticateToken, async (req, res) => {
 // =========================
 
 app.get('/api/demandes', authenticateToken, async (req, res) => {
+  // Headers CORS
+  res.header('Access-Control-Allow-Origin', req.headers.origin || '*');
+  res.header('Access-Control-Allow-Credentials', 'true');
+  
   try {
     const {
       type_demande,
@@ -2000,6 +2246,10 @@ app.get('/api/demandes', authenticateToken, async (req, res) => {
 });
 
 app.get('/api/demandes/:id', authenticateToken, async (req, res) => {
+  // Headers CORS
+  res.header('Access-Control-Allow-Origin', req.headers.origin || '*');
+  res.header('Access-Control-Allow-Credentials', 'true');
+  
   try {
     const { id } = req.params;
     console.log('📄 Récupération demande ID:', id);
@@ -2044,6 +2294,10 @@ app.get('/api/demandes/:id', authenticateToken, async (req, res) => {
 });
 
 app.post('/api/demandes', authenticateToken, async (req, res) => {
+  // Headers CORS
+  res.header('Access-Control-Allow-Origin', req.headers.origin || '*');
+  res.header('Access-Control-Allow-Credentials', 'true');
+  
   try {
     console.log('➕ Création nouvelle demande RH');
 
@@ -2106,6 +2360,10 @@ app.post('/api/demandes', authenticateToken, async (req, res) => {
 });
 
 app.put('/api/demandes/:id', authenticateToken, async (req, res) => {
+  // Headers CORS
+  res.header('Access-Control-Allow-Origin', req.headers.origin || '*');
+  res.header('Access-Control-Allow-Credentials', 'true');
+  
   try {
     const { id } = req.params;
     console.log('✏️ Mise à jour demande ID:', id);
@@ -2196,6 +2454,10 @@ app.put('/api/demandes/:id', authenticateToken, async (req, res) => {
 });
 
 app.put('/api/demandes/:id/statut', authenticateToken, async (req, res) => {
+  // Headers CORS
+  res.header('Access-Control-Allow-Origin', req.headers.origin || '*');
+  res.header('Access-Control-Allow-Credentials', 'true');
+  
   try {
     const { id } = req.params;
     const { statut, commentaire_refus } = req.body;
@@ -2228,6 +2490,10 @@ app.put('/api/demandes/:id/statut', authenticateToken, async (req, res) => {
 });
 
 app.delete('/api/demandes/:id', authenticateToken, async (req, res) => {
+  // Headers CORS
+  res.header('Access-Control-Allow-Origin', req.headers.origin || '*');
+  res.header('Access-Control-Allow-Credentials', 'true');
+  
   try {
     const { id } = req.params;
     console.log('🗑️ Suppression demande ID:', id);
@@ -2258,6 +2524,13 @@ app.delete('/api/demandes/:id', authenticateToken, async (req, res) => {
 // =========================
 // Fallback & erreurs
 // =========================
+
+// Gérer les erreurs CORS manuellement
+app.use((req, res, next) => {
+  res.header('Access-Control-Allow-Origin', req.headers.origin || '*');
+  res.header('Access-Control-Allow-Credentials', 'true');
+  next();
+});
 
 app.use('*', (req, res) => {
   res.status(404).json({
@@ -2291,6 +2564,7 @@ app.listen(PORT, () => {
   console.log('📁 Dossier photos employés:', employeePhotoDir);
   console.log('📁 Dossier PDFs:', pdfStorageDir);
   console.log('📁 Dossier Archive PDFs:', archivePdfDir);
+  console.log('🌐 Origines autorisées CORS:', allowedOrigins);
   console.log('='.repeat(60) + '\n');
 });
 
