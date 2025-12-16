@@ -606,38 +606,59 @@ app.get('/api/archive-pdfs/:filename', (req, res) => {
   }
 });
 
-// Mise à jour de la route d'archivage
+// Mise à jour de la route d'archivage - VERSION CORRIGÉE
 app.put('/api/employees/:id/archive', authenticateToken, async (req, res) => {
   try {
     const { id } = req.params;
-    const { pdf_url, entretien_depart, date_depart } = req.body; // <-- Ajouter date_depart
+    const { pdf_url, entretien_depart, date_depart } = req.body;
 
-    console.log('📁 Archivage employé ID:', id, 'avec PDF:', pdf_url, 'Date départ:', date_depart);
+    console.log('📁 Archivage employé ID:', id, 'avec PDF:', pdf_url, 'Date départ brute:', date_depart);
 
     if (!pdf_url) {
       return res.status(400).json({
+        success: false,
         error: 'Le lien PDF de l\'entretien de départ est obligatoire'
       });
     }
 
-    if (!date_depart) {
-      return res.status(400).json({
-        error: 'La date de départ est obligatoire pour l\'archivage'
-      });
-    }
-
-    // Valider que la date est au format valide
-    const dateDepart = new Date(date_depart);
-    if (isNaN(dateDepart.getTime())) {
-      return res.status(400).json({
-        error: 'Format de date de départ invalide'
-      });
+    // Formater la date pour PostgreSQL (YYYY-MM-DD)
+    let formattedDate;
+    if (date_depart) {
+      try {
+        // Si la date est au format ISO (avec 'T'), extraire juste la partie date
+        if (date_depart.includes('T')) {
+          formattedDate = date_depart.split('T')[0];
+          console.log('📅 Date formatée (ISO -> YYYY-MM-DD):', formattedDate);
+        } else {
+          formattedDate = date_depart;
+          console.log('📅 Date déjà formatée:', formattedDate);
+        }
+        
+        // Valider que c'est une date valide
+        const dateObj = new Date(formattedDate);
+        if (isNaN(dateObj.getTime())) {
+          return res.status(400).json({
+            success: false,
+            error: 'Format de date invalide'
+          });
+        }
+      } catch (dateError) {
+        console.error('❌ Erreur formatage date:', dateError);
+        return res.status(400).json({
+          success: false,
+          error: 'Format de date invalide'
+        });
+      }
+    } else {
+      // Si aucune date n'est fournie, utiliser la date d'aujourd'hui
+      formattedDate = new Date().toISOString().split('T')[0];
+      console.log('📅 Utilisation date du jour:', formattedDate);
     }
 
     const result = await pool.query(
       `
       UPDATE employees 
-      SET date_depart = $1,  // <-- Utiliser la date fournie par l'utilisateur
+      SET date_depart = $1,
           entretien_depart = $2,
           pdf_archive_url = $3,
           statut = 'archive',
@@ -645,22 +666,41 @@ app.put('/api/employees/:id/archive', authenticateToken, async (req, res) => {
       WHERE id = $4
       RETURNING *
     `,
-      [date_depart, entretien_depart || 'Entretien de départ terminé', pdf_url, id]
+      [formattedDate, entretien_depart || 'Entretien de départ terminé', pdf_url, id]
     );
 
     if (result.rows.length === 0) {
       return res.status(404).json({
+        success: false,
         error: 'Employé non trouvé'
       });
     }
 
-    console.log('✅ Employé archivé avec PDF et date:', date_depart);
-    res.json(result.rows[0]);
+    console.log('✅ Employé archivé avec PDF et date:', formattedDate);
+    res.json({
+      success: true,
+      message: 'Employé archivé avec succès',
+      employee: result.rows[0]
+    });
   } catch (error) {
     console.error("❌ Erreur archivage:", error);
+    
+    // Message d'erreur détaillé
+    let errorMessage = "Erreur lors de l'archivage de l'employé";
+    
+    if (error.code === '22007') {
+      errorMessage = "Format de date invalide pour la base de données";
+    } else if (error.code === '23505') {
+      errorMessage = "Violation de contrainte unique";
+    } else if (error.message.includes('date')) {
+      errorMessage = "Erreur avec le format de date";
+    }
+    
     res.status(500).json({
-      error: "Erreur lors de l'archivage de l'employé",
-      message: error.message
+      success: false,
+      error: errorMessage,
+      details: error.message,
+      code: error.code
     });
   }
 });
