@@ -12,6 +12,7 @@ const fs = require('fs');
 const PDFKitDocument = require('pdfkit');
 const crypto = require('crypto');
 const nodemailer = require('nodemailer');
+const { PDFDocument } = require('pdf-lib'); 
 
 const app = express();
 const PORT = Number(process.env.PORT || 5000);
@@ -849,9 +850,9 @@ app.post(
   async (req, res) => {
     try {
       const { employeeId } = req.params;
-      const { photos: clientPhotos, dossierName } = req.body;
+      const { photos: clientPhotos, dossierName, actionType = 'new' } = req.body;
 
-      console.log('📄 Génération PDF pour employé:', employeeId, 'dossier:', dossierName);
+      console.log('📄 Génération PDF pour employé:', employeeId, 'dossier:', dossierName, 'action:', actionType);
 
       if (!dossierName || !dossierName.trim()) {
         return res.status(400).json({ error: 'Nom de dossier manquant' });
@@ -889,9 +890,67 @@ app.post(
         });
       }
 
+      // Fonction pour télécharger un PDF depuis une URL
+      const downloadPDFFromUrl = async (url) => {
+        try {
+          console.log('📥 Téléchargement PDF depuis:', url);
+          
+          // Si c'est une URL locale (sert par notre backend)
+          if (url.includes('/api/pdfs/')) {
+            const filename = url.split('/api/pdfs/')[1];
+            const filePath = path.join(pdfStorageDir, filename);
+            if (fs.existsSync(filePath)) {
+              return fs.readFileSync(filePath);
+            }
+          }
+          
+          // Si c'est une URL Azure Blob Storage ou autre URL externe
+          if (url.startsWith('http')) {
+            const response = await fetch(url);
+            if (!response.ok) {
+              throw new Error(`Erreur téléchargement: ${response.status}`);
+            }
+            const buffer = await response.arrayBuffer();
+            return Buffer.from(buffer);
+          }
+          
+          return null;
+        } catch (error) {
+          console.error('❌ Erreur téléchargement PDF:', error);
+          return null;
+        }
+      };
+
+      // Fonction pour fusionner des PDF
+      const mergePDFs = async (existingPDFBuffer, newPDFBuffer) => {
+        try {
+          console.log('🔄 Fusion des PDF...');
+          
+          const mergedPdf = await PDFDocument.create();
+          
+          // Ajouter les pages du PDF existant
+          if (existingPDFBuffer) {
+            const existingPdf = await PDFDocument.load(existingPDFBuffer);
+            const existingPages = await mergedPdf.copyPages(existingPdf, existingPdf.getPageIndices());
+            existingPages.forEach(page => mergedPdf.addPage(page));
+          }
+          
+          // Ajouter les pages du nouveau PDF
+          const newPdf = await PDFDocument.load(newPDFBuffer);
+          const newPages = await mergedPdf.copyPages(newPdf, newPdf.getPageIndices());
+          newPages.forEach(page => mergedPdf.addPage(page));
+          
+          const mergedBytes = await mergedPdf.save();
+          return Buffer.from(mergedBytes);
+        } catch (error) {
+          console.error('❌ Erreur fusion PDF:', error);
+          throw error;
+        }
+      };
+
       // Fonction pour générer et sauvegarder le PDF
-      const generateAndSavePDF = (employee, photos, dossierName) => {
-        return new Promise((resolve, reject) => {
+      const generateAndSavePDF = async (employee, photos, dossierName, actionType) => {
+        return new Promise(async (resolve, reject) => {
           try {
             console.log('🧾 Début génération PDF avec pdfkit...');
             const doc = new PDFKitDocument({ size: 'A4', margin: 50 });
@@ -905,12 +964,27 @@ app.post(
 
             doc.on('end', async () => {
               try {
-                const pdfBuffer = Buffer.concat(buffers);
+                const newPdfBuffer = Buffer.concat(buffers);
+                let finalPdfBuffer = newPdfBuffer;
+                
+                // Si actionType est 'merge' et qu'il y a déjà un dossier
+                if (actionType === 'merge' && employee.dossier_rh) {
+                  console.log('🔄 Tentative de fusion avec le PDF existant...');
+                  const existingPdfBuffer = await downloadPDFFromUrl(employee.dossier_rh);
+                  
+                  if (existingPdfBuffer) {
+                    finalPdfBuffer = await mergePDFs(existingPdfBuffer, newPdfBuffer);
+                    console.log('✅ PDF fusionné avec succès');
+                  } else {
+                    console.log('⚠️ Impossible de télécharger le PDF existant, création d\'un nouveau');
+                  }
+                }
+                
                 const fileName = `dossier-${employee.matricule || 'EMP'}-${Date.now()}.pdf`;
                 console.log('💾 Sauvegarde locale du fichier:', fileName);
                 
                 const filePath = path.join(pdfStorageDir, fileName);
-                fs.writeFileSync(filePath, pdfBuffer);
+                fs.writeFileSync(filePath, finalPdfBuffer);
                 
                 const baseUrl = process.env.BACKEND_URL || 'https://backend-rh.azurewebsites.net';
                 const pdfUrl = `${baseUrl}/api/pdfs/${fileName}`;
@@ -923,7 +997,7 @@ app.post(
               }
             });
 
-            // Contenu du PDF
+            // Contenu du PDF - Page de garde avec métadonnées
             doc.fontSize(24).text('DOSSIER RH', { align: 'left' });
             doc.moveDown(2);
 
@@ -937,9 +1011,9 @@ app.post(
             doc.moveDown(0.5);
             doc.fontSize(14).text(`Nom du dossier : ${dossierName || '-'}`);
             doc.moveDown(0.5);
-            doc
-              .fontSize(12)
-              .text(`Date de génération : ${new Date().toLocaleDateString('fr-FR')}`);
+            doc.fontSize(12).text(`Type d'ajout : ${actionType === 'merge' ? 'Ajout de documents' : 'Nouveau dossier'}`);
+            doc.moveDown(0.5);
+            doc.fontSize(12).text(`Date de génération : ${new Date().toLocaleDateString('fr-FR')} ${new Date().toLocaleTimeString('fr-FR')}`);
             doc.addPage();
 
             // Pages des photos
@@ -962,7 +1036,11 @@ app.post(
 
                   doc
                     .fontSize(12)
-                    .text(`Photo : ${photo.originalname || photo.filename}`, 50, 50);
+                    .text(`Document : ${photo.originalname || photo.filename}`, 50, 50);
+                  
+                  doc
+                    .fontSize(10)
+                    .text(`Date d'ajout : ${new Date().toLocaleDateString('fr-FR')}`, 50, 70);
 
                   doc.image(photo.path, {
                     fit: [maxWidth, maxHeight],
@@ -972,7 +1050,7 @@ app.post(
                     y: 100
                   });
 
-                  console.log('📄 Photo ajoutée au PDF:', photo.path);
+                  console.log('📄 Document ajouté au PDF:', photo.path);
                 } catch (imageError) {
                   console.error(
                     `❌ Erreur avec la photo ${photo.filename}:`,
@@ -990,7 +1068,7 @@ app.post(
         });
       };
 
-      const pdfUrl = await generateAndSavePDF(employee, photos, dossierName);
+      const pdfUrl = await generateAndSavePDF(employee, photos, dossierName, actionType);
 
       const updateResult = await pool.query(
         'UPDATE employees SET dossier_rh = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2 RETURNING *',
@@ -1015,8 +1093,9 @@ app.post(
 
       res.json({
         success: true,
-        message: 'Dossier RH généré avec succès',
+        message: actionType === 'merge' ? 'Documents ajoutés au dossier existant' : 'Dossier RH généré avec succès',
         pdfUrl: pdfUrl,
+        actionType: actionType,
         employee: updateResult.rows[0]
       });
     } catch (error) {
@@ -1031,6 +1110,78 @@ app.post(
     }
   }
 );
+
+
+
+
+// Route pour supprimer le dossier RH d'un employé
+app.delete('/api/employees/:id/dossier-rh', authenticateToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+    console.log('🗑️ Suppression dossier RH pour employé ID:', id);
+
+    // Récupérer l'employé pour avoir l'URL du PDF
+    const employeeResult = await pool.query(
+      'SELECT id, matricule, dossier_rh FROM employees WHERE id = $1',
+      [id]
+    );
+
+    if (employeeResult.rows.length === 0) {
+      return res.status(404).json({
+        success: false,
+        error: 'Employé non trouvé'
+      });
+    }
+
+    const employee = employeeResult.rows[0];
+
+    if (!employee.dossier_rh) {
+      return res.status(400).json({
+        success: false,
+        error: "Aucun dossier RH n'existe pour cet employé"
+      });
+    }
+
+    // Supprimer le fichier physique si c'est un fichier local
+    if (employee.dossier_rh.includes('/api/pdfs/')) {
+      try {
+        const filename = employee.dossier_rh.split('/api/pdfs/')[1];
+        const filePath = path.join(pdfStorageDir, filename);
+        
+        if (fs.existsSync(filePath)) {
+          fs.unlinkSync(filePath);
+          console.log('✅ Fichier PDF supprimé:', filePath);
+        }
+      } catch (fileError) {
+        console.warn('⚠️ Impossible de supprimer le fichier physique:', fileError.message);
+      }
+    }
+
+    // Mettre à jour la base de données pour supprimer le lien
+    const updateResult = await pool.query(
+      'UPDATE employees SET dossier_rh = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = $1 RETURNING *',
+      [id]
+    );
+
+    console.log('✅ Dossier RH supprimé pour employé:', employee.matricule);
+
+    res.json({
+      success: true,
+      message: 'Dossier RH supprimé avec succès',
+      employee: updateResult.rows[0]
+    });
+  } catch (error) {
+    console.error('❌ Erreur suppression dossier RH:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Erreur lors de la suppression du dossier RH',
+      details: error.message
+    });
+  }
+});
+
+
+
 
 // Route pour servir les PDF
 app.get('/api/pdfs/:filename', (req, res) => {
