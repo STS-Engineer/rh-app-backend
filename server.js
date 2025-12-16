@@ -159,7 +159,7 @@ const archivePdfStorage = multer.diskStorage({
 const archivePdfUpload = multer({
   storage: archivePdfStorage,
   limits: {
-    fileSize: 50 * 1024 * 1024 // 50MB max
+    fileSize: 200 * 1024 * 1024 // 200MB max
   },
   fileFilter: function (req, file, cb) {
     if (file.mimetype === 'application/pdf') {
@@ -187,7 +187,7 @@ const storage = multer.diskStorage({
 const upload = multer({
   storage: storage,
   limits: {
-    fileSize: 200 * 1024 * 1024 // 200MB max
+    fileSize: 400 * 1024 * 1024 // 400MB max
   },
   fileFilter: function (req, file, cb) {
     if (file.mimetype.startsWith('image/')) {
@@ -215,7 +215,7 @@ const employeePhotoStorage = multer.diskStorage({
 const employeePhotoUpload = multer({
   storage: employeePhotoStorage,
   limits: {
-    fileSize: 20 * 1024 * 1024 //20MB max
+    fileSize: 100 * 1024 * 1024 //100MB max
   },
   fileFilter: function (req, file, cb) {
     if (file.mimetype.startsWith('image/')) {
