@@ -844,6 +844,7 @@ app.post(
 );
 
 // Générer le PDF et le stocker localement
+// Route pour générer/ajouter au PDF et le stocker localement
 app.post(
   '/api/dossier-rh/generate-pdf/:employeeId',
   authenticateToken,
@@ -895,7 +896,7 @@ app.post(
         try {
           console.log('📥 Téléchargement PDF depuis:', url);
           
-          // Si c'est une URL locale (sert par notre backend)
+          // Si c'est une URL locale (servie par notre backend)
           if (url.includes('/api/pdfs/')) {
             const filename = url.split('/api/pdfs/')[1];
             const filePath = path.join(pdfStorageDir, filename);
@@ -966,14 +967,16 @@ app.post(
               try {
                 const newPdfBuffer = Buffer.concat(buffers);
                 let finalPdfBuffer = newPdfBuffer;
+                let isMerged = false;
                 
-                // Si actionType est 'merge' et qu'il y a déjà un dossier
-                if (actionType === 'merge' && employee.dossier_rh) {
+                // Si l'employé a déjà un dossier RH et qu'on veut ajouter
+                if (employee.dossier_rh && actionType === 'add') {
                   console.log('🔄 Tentative de fusion avec le PDF existant...');
                   const existingPdfBuffer = await downloadPDFFromUrl(employee.dossier_rh);
                   
                   if (existingPdfBuffer) {
                     finalPdfBuffer = await mergePDFs(existingPdfBuffer, newPdfBuffer);
+                    isMerged = true;
                     console.log('✅ PDF fusionné avec succès');
                   } else {
                     console.log('⚠️ Impossible de télécharger le PDF existant, création d\'un nouveau');
@@ -990,7 +993,7 @@ app.post(
                 const pdfUrl = `${baseUrl}/api/pdfs/${fileName}`;
                 
                 console.log('✅ PDF sauvegardé localement:', pdfUrl);
-                resolve(pdfUrl);
+                resolve({ pdfUrl, fileName, isMerged });
               } catch (saveError) {
                 console.error('❌ Erreur sauvegarde locale:', saveError);
                 reject(saveError);
@@ -1011,7 +1014,7 @@ app.post(
             doc.moveDown(0.5);
             doc.fontSize(14).text(`Nom du dossier : ${dossierName || '-'}`);
             doc.moveDown(0.5);
-            doc.fontSize(12).text(`Type d'ajout : ${actionType === 'merge' ? 'Ajout de documents' : 'Nouveau dossier'}`);
+            doc.fontSize(12).text(`Type d'ajout : ${actionType === 'add' ? 'Ajout de documents' : 'Nouveau dossier'}`);
             doc.moveDown(0.5);
             doc.fontSize(12).text(`Date de génération : ${new Date().toLocaleDateString('fr-FR')} ${new Date().toLocaleTimeString('fr-FR')}`);
             doc.addPage();
@@ -1068,7 +1071,7 @@ app.post(
         });
       };
 
-      const pdfUrl = await generateAndSavePDF(employee, photos, dossierName, actionType);
+      const { pdfUrl, isMerged } = await generateAndSavePDF(employee, photos, dossierName, actionType);
 
       const updateResult = await pool.query(
         'UPDATE employees SET dossier_rh = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2 RETURNING *',
@@ -1093,9 +1096,10 @@ app.post(
 
       res.json({
         success: true,
-        message: actionType === 'merge' ? 'Documents ajoutés au dossier existant' : 'Dossier RH généré avec succès',
+        message: isMerged ? 'Documents ajoutés au dossier existant' : 'Dossier RH généré avec succès',
         pdfUrl: pdfUrl,
         actionType: actionType,
+        isMerged: isMerged,
         employee: updateResult.rows[0]
       });
     } catch (error) {
