@@ -2274,6 +2274,668 @@ app.use((err, req, res, next) => {
   });
 });
 
+
+
+// ==================================================
+// =================== MODULE VISA ==================
+// ==================================================
+
+const { types } = require("pg");
+types.setTypeParser(1082, (val) => val);
+
+const PizZip = require("pizzip");
+const Docxtemplater = require("docxtemplater");
+const { exec } = require("child_process");
+const { promisify } = require("util");
+const execAsync = promisify(exec);
+
+const { PDFDocument } = require("pdf-lib");
+
+const ASSURANCE_REQUEST_TO = process.env.ASSURANCE_REQUEST_TO;
+const BILLET_REQUEST_TO = process.env.BILLET_REQUEST_TO;
+
+// =========================
+// STOCKAGE VISA SÉPARÉ
+// =========================
+const visaPdfDir = path.join(__dirname, "uploads", "visa-pdfs");
+
+if (!fs.existsSync(visaPdfDir)) {
+  fs.mkdirSync(visaPdfDir, { recursive: true });
+  console.log(`📁 Dossier VISA PDFs créé: ${visaPdfDir}`);
+}
+
+// Route pour servir les PDF VISA
+app.get("/api/visa-pdfs/:filename", (req, res) => {
+  try {
+    const filename = path.basename(req.params.filename);
+    const filePath = path.join(visaPdfDir, filename);
+
+    console.log("📄 Demande PDF VISA:", filename);
+
+    if (!fs.existsSync(filePath)) {
+      console.error("❌ PDF VISA non trouvé:", filePath);
+      return res.status(404).json({ error: "PDF VISA non trouvé" });
+    }
+
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader("Content-Disposition", `inline; filename="${filename}"`);
+    return res.sendFile(filePath);
+  } catch (error) {
+    console.error("❌ Erreur service PDF VISA:", error);
+    return res.status(500).json({ error: "Erreur lors du chargement du PDF VISA" });
+  }
+});
+
+// Multer VISA (PDF only + nom original sécurisé + suffix)
+const visaPdfStorage = multer.diskStorage({
+  destination: function (req, file, cb) {
+    cb(null, visaPdfDir);
+  },
+  filename: function (req, file, cb) {
+    const originalName = path.basename(file.originalname || "visa.pdf");
+
+    const safeName = originalName
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .replace(/[^a-zA-Z0-9.\-_]/g, "_")
+      .replace(/_+/g, "_")
+      .replace(/^_|_$/g, "");
+
+    const ext = (path.extname(safeName) || ".pdf").toLowerCase();
+    const base = path.basename(safeName, ext) || "visa";
+
+    const uniqueSuffix = Date.now() + "-" + Math.round(Math.random() * 1e9);
+    cb(null, `${base}-${uniqueSuffix}${ext}`);
+  },
+});
+
+const visaPdfUpload = multer({
+  storage: visaPdfStorage,
+  limits: { fileSize: 200 * 1024 * 1024 }, // 200MB
+  fileFilter: function (req, file, cb) {
+    if (file.mimetype === "application/pdf") cb(null, true);
+    else cb(new Error("Seuls les fichiers PDF sont autorisés!"), false);
+  },
+});
+
+function buildVisaPdfUrl(filename) {
+  const baseUrl = process.env.BACKEND_URL || `http://localhost:${PORT}`;
+  return `${baseUrl}/api/visa-pdfs/${filename}`;
+}
+
+// =========================
+// TEMPLATE DOCUMENTS VISA
+// =========================
+function createDocumentsTemplate() {
+  return [
+    { code: "PASSEPORT_ORIGINAL", label: "Passeport (original)", mode: "PHYSICAL" },
+    { code: "PHOTOS", label: "2 photos d'identité", mode: "PHYSICAL" },
+    { code: "COPIE_PAGE_1_PASSEPORT", label: "Copie page 1 passeport", mode: "PHYSICAL" },
+    { code: "CNSS", label: "Copie Historique CNSS", mode: "UPLOAD" },
+    { code: "FICHES_PAIE", label: "3 dernières fiches de paie", mode: "UPLOAD" },
+
+    { code: "ATTESTATION_TRAVAIL", label: "Attestation de travail", mode: "UPLOAD" },
+    { code: "ORDRE_MISSION", label: "Ordre de mission", mode: "UPLOAD" },
+    { code: "INVITATION", label: "Invitation + prise en charge", mode: "UPLOAD" },
+    { code: "FRAIS_VISA", label: "Recepissé", mode: "UPLOAD" },
+
+    { code: "ASSURANCE", label: "Assurance voyage", mode: "UPLOAD" },
+    { code: "BILLET_AVION", label: "Billet d'avion", mode: "UPLOAD" },
+    { code: "RESERVATION_HOTEL", label: "Réservation d'hôtel", mode: "UPLOAD" },
+  ];
+}
+
+function safeFilename(str) {
+  return String(str || "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-zA-Z0-9_-]+/g, "_")
+    .replace(/_+/g, "_")
+    .replace(/^_|_$/g, "");
+}
+
+function formatDateFR(d) {
+  if (!d) return "";
+  return new Date(d).toLocaleDateString("fr-FR");
+}
+
+// =========================
+// HELPERS DB VISA
+// =========================
+async function getEmployeeByIdVisa(employeId) {
+  const result = await pool.query(
+    `SELECT id, nom, prenom, adresse_mail, date_naissance, cin, date_debut, poste, passeport, date_expiration_passport
+     FROM employees WHERE id = $1`,
+    [employeId]
+  );
+  if (result.rows.length === 0) throw new Error("Employé non trouvé");
+  return result.rows[0];
+}
+
+async function getDossierEmailContext(dossierId) {
+  const r = await pool.query(
+    `SELECT d.id as dossier_id, d.date_depart, d.date_retour, d.motif_deplacement,
+            e.id as employee_id, e.prenom, e.nom
+     FROM visa_dossiers d
+     JOIN employees e ON e.id = d.employee_id
+     WHERE d.id = $1`,
+    [dossierId]
+  );
+  if (!r.rows.length) throw new Error("Dossier introuvable");
+  const row = r.rows[0];
+
+  return {
+    dossierId: row.dossier_id,
+    employeeId: row.employee_id,
+    employeeName: `${row.prenom} ${row.nom}`,
+    departureDate: row.date_depart,
+    returnDate: row.date_retour,
+    motif: row.motif_deplacement,
+  };
+}
+
+// =========================
+// EMAILS VISA (utilise emailTransporter EXISTANT)
+// =========================
+async function sendVisaDossierCreationEmail({ to, employeeName }) {
+  if (!to) throw new Error("Email employé manquant");
+
+  const subject = `Dossier Visa – Documents à fournir (${employeeName})`;
+  const html = `
+    <div style="font-family: Arial, sans-serif; line-height:1.6">
+      <p>Bonjour <b>${employeeName}</b>,</p>
+      <p>Votre <b>dossier visa</b> a été créé. Merci de préparer les éléments suivants :</p>
+      <ul>
+        <li><b>Ramener votre passeport (original)</b></li>
+        <li><b>Ramener une copie de la page 1 du passeport</b></li>
+        <li><b>Ramener 2 photos d'identité</b></li>
+        <li><b>Envoyer par mail une copie de l’historique CNSS</b> à
+          <a href="mailto:${EMAIL_FROM_VISA}">${EMAIL_FROM_VISA}</a>
+        </li>
+      </ul>
+      <p>Merci,<br/>${EMAIL_FROM_NAME_VISA}</p>
+    </div>
+  `;
+
+  return emailTransporter.sendMail({
+    from: `"${EMAIL_FROM_NAME_VISA}" <${EMAIL_FROM_VISA}>`,
+    to,
+    subject,
+    html,
+  });
+}
+
+async function sendAssuranceRequestEmail({ to, employeeName, departureDate, returnDate }) {
+  const subject = `Demande Assurance Voyage – ${employeeName}`;
+  const html = `
+    <div style="font-family: Arial, sans-serif; line-height:1.6">
+      <p>Bonjour,</p>
+      <p>Merci de <b>fournir l’assurance voyage</b> pour :</p>
+      <p>
+        <b>Employé :</b> ${employeeName}<br/>
+        <b>Date départ :</b> ${departureDate}<br/>
+        <b>Date retour :</b> ${returnDate}
+      </p>
+      <p>Merci,<br/>${EMAIL_FROM_NAME_VISA}</p>
+    </div>
+  `;
+
+  return emailTransporter.sendMail({
+    from: `"${EMAIL_FROM_NAME_VISA}" <${EMAIL_FROM_VISA}>`,
+    to,
+    subject,
+    html,
+  });
+}
+
+async function sendBilletRequestEmail({ to, employeeName, departureDate, returnDate }) {
+  const subject = `Demande Billet d’avion – ${employeeName}`;
+  const html = `
+    <div style="font-family: Arial, sans-serif; line-height:1.6">
+      <p>Bonjour,</p>
+      <p>Merci de <b>fournir le billet d’avion</b> pour :</p>
+      <p>
+        <b>Employé :</b> ${employeeName}<br/>
+        <b>Date départ :</b> ${departureDate}<br/>
+        <b>Date retour :</b> ${returnDate}
+      </p>
+      <p>Merci,<br/>${EMAIL_FROM_NAME_VISA}</p>
+    </div>
+  `;
+
+  return emailTransporter.sendMail({
+    from: `"${EMAIL_FROM_NAME_VISA}" <${EMAIL_FROM_VISA}>`,
+    to,
+    subject,
+    html,
+  });
+}
+
+// ==================================================
+// ===================== ROUTES VISA =================
+// ==================================================
+
+// Liste dossiers VISA
+app.get("/api/visa-dossiers", authenticateToken, async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT 
+        d.id,
+        d.employee_id,
+        d.date_depart,
+        d.date_retour,
+        d.motif_deplacement,
+        d.statut,
+        d.numero_visa,
+        d.visa_date_debut,
+        d.visa_date_fin,
+        d.created_at,
+        d.updated_at,
+
+        e.prenom,
+        e.nom,
+        e.poste,
+
+        COUNT(vd.id)::int AS total_docs,
+        COALESCE(SUM(
+          CASE
+            WHEN vd.mode = 'UPLOAD'  AND vd.statut = 'UPLOADED' THEN 1
+            WHEN vd.mode = 'PHYSICAL' AND vd.statut = 'RECEIVED_PHYSICAL' THEN 1
+            ELSE 0
+          END
+        ), 0)::int AS ok_docs
+
+      FROM visa_dossiers d
+      JOIN employees e ON e.id = d.employee_id
+      LEFT JOIN visa_documents vd ON vd.dossier_id = d.id
+      GROUP BY d.id, e.prenom, e.nom, e.poste
+      ORDER BY d.created_at DESC
+    `);
+
+    const dossiers = result.rows.map((r) => {
+      const totalDocs = Number(r.total_docs || 0);
+      const okDocs = Number(r.ok_docs || 0);
+      const percent = totalDocs > 0 ? Math.round((okDocs / totalDocs) * 100) : 0;
+
+      return {
+        id: r.id,
+        employee: {
+          id: r.employee_id,
+          name: `${r.prenom} ${r.nom}`,
+          poste: r.poste || "",
+          department: r.departement || "",
+        },
+        departureDate: r.date_depart,
+        returnDate: r.date_retour,
+        motif: r.motif_deplacement,
+        status: r.statut,
+        visa: {
+          numero: r.numero_visa,
+          dateDebut: r.visa_date_debut,
+          dateFin: r.visa_date_fin,
+        },
+        progress: { okDocs, totalDocs, percent },
+        createdAt: r.created_at,
+        updatedAt: r.updated_at,
+      };
+    });
+
+    res.json(dossiers);
+  } catch (err) {
+    console.error("❌ /api/visa-dossiers error:", err);
+    res.status(500).json({ message: err.message });
+  }
+});
+
+// Dossier VISA détail
+app.get("/api/visa-dossiers/:id", authenticateToken, async (req, res) => {
+  const dossierId = Number(req.params.id);
+  try {
+    const dRes = await pool.query(
+      `SELECT d.*, e.prenom, e.nom, e.poste
+       FROM visa_dossiers d
+       JOIN employees e ON e.id = d.employee_id
+       WHERE d.id = $1`,
+      [dossierId]
+    );
+    if (!dRes.rows.length) return res.status(404).json({ message: "Dossier introuvable" });
+
+    const r = dRes.rows[0];
+
+    const docsRes = await pool.query(
+      `SELECT *
+       FROM visa_documents
+       WHERE dossier_id = $1
+       ORDER BY id`,
+      [dossierId]
+    );
+
+    const dossier = {
+      id: r.id,
+      employee: {
+        id: r.employee_id,
+        name: `${r.prenom} ${r.nom}`,
+        poste: r.poste || "",
+        department: r.departement || "",
+      },
+      departureDate: r.date_depart,
+      returnDate: r.date_retour,
+      motif: r.motif_deplacement,
+      status: r.statut,
+      documents: docsRes.rows.map((d) => ({
+        id: d.id,
+        code: d.code,
+        label: d.label,
+        mode: d.mode,
+        status: d.statut,
+        fileUrl: d.file_url,
+        originalFilename: d.original_filename,
+      })),
+    };
+
+    res.json(dossier);
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
+// Créer dossier VISA + template + email employé
+app.post("/api/visa-dossiers", authenticateToken, async (req, res) => {
+  const { employeeId, motif, departureDate, returnDate } = req.body;
+
+  if (!employeeId || !motif || !departureDate || !returnDate) {
+    return res.status(400).json({ message: "Champs manquants" });
+  }
+  if (returnDate < departureDate) {
+    return res.status(400).json({ message: "date_retour doit être >= date_depart" });
+  }
+
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+
+    const dIns = await client.query(
+      `INSERT INTO visa_dossiers (employee_id, motif_deplacement, date_depart, date_retour)
+       VALUES ($1,$2,$3,$4)
+       RETURNING id`,
+      [employeeId, motif, departureDate, returnDate]
+    );
+    const dossierId = dIns.rows[0].id;
+
+    const template = createDocumentsTemplate();
+    for (const doc of template) {
+      await client.query(
+        `INSERT INTO visa_documents (dossier_id, code, label, mode, statut)
+         VALUES ($1,$2,$3,$4,'MISSING')`,
+        [dossierId, doc.code, doc.label, doc.mode]
+      );
+    }
+
+    await client.query("COMMIT");
+
+    let emailSent = false;
+    let emailError = null;
+
+    try {
+      const emp = await getEmployeeByIdVisa(employeeId);
+      await sendVisaDossierCreationEmail({
+        to: emp.adresse_mail,
+        employeeName: `${emp.prenom} ${emp.nom}`,
+      });
+      emailSent = true;
+    } catch (e) {
+      emailError = e.message;
+      console.error("❌ Erreur envoi email dossier:", e.message);
+    }
+
+    res.json({ id: dossierId, emailSent, emailError });
+  } catch (err) {
+    await client.query("ROLLBACK");
+    res.status(500).json({ message: err.message });
+  } finally {
+    client.release();
+  }
+});
+
+// Upload document VISA (PDF) — style ARCHIVE
+// Important: FormData field = pdfFile
+app.post(
+  "/api/visa-documents/:id/upload",
+  authenticateToken,
+  visaPdfUpload.single("pdfFile"),
+  async (req, res) => {
+    const docId = Number(req.params.id);
+
+    try {
+      console.log("📄 ========== UPLOAD PDF VISA DOC ==========");
+
+      if (!req.file) {
+        console.log("❌ Aucun fichier PDF uploadé");
+        return res.status(400).json({ success: false, error: "Aucun fichier PDF uploadé" });
+      }
+
+      console.log("📁 Fichier PDF VISA reçu:", {
+        filename: req.file.filename,
+        originalname: req.file.originalname,
+        size: req.file.size,
+        mimetype: req.file.mimetype,
+      });
+
+      const fileUrl = buildVisaPdfUrl(req.file.filename);
+
+      await pool.query(
+        `UPDATE visa_documents
+         SET statut = 'UPLOADED',
+             file_url = $1,
+             original_filename = $2,
+             updated_at = now()
+         WHERE id = $3`,
+        [fileUrl, req.file.originalname, docId]
+      );
+
+      console.log("✅ visa_documents mis à jour:", { docId, fileUrl });
+
+      return res.json({
+        success: true,
+        fileUrl,
+        originalFilename: req.file.originalname,
+        filename: req.file.filename,
+      });
+    } catch (err) {
+      console.error("❌ upload visa doc error:", err);
+      return res.status(500).json({ message: err.message });
+    }
+  }
+);
+
+// Mettre à jour doc (statut / url)
+app.patch("/api/visa-documents/:id", authenticateToken, async (req, res) => {
+  const docId = Number(req.params.id);
+  const { status, fileUrl, originalFilename } = req.body;
+
+  if (!status) return res.status(400).json({ message: "status obligatoire" });
+
+  try {
+    await pool.query(
+      `UPDATE visa_documents
+       SET statut = $1,
+           file_url = COALESCE($2, file_url),
+           original_filename = COALESCE($3, original_filename),
+           updated_at = now()
+       WHERE id = $4`,
+      [status, fileUrl || null, originalFilename || null, docId]
+    );
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
+// Envoyer mail assurance
+app.post("/api/email/assurance", authenticateToken, async (req, res) => {
+  try {
+    const { dossierId } = req.body;
+    if (!dossierId) return res.status(400).json({ message: "dossierId obligatoire" });
+
+    const ctx = await getDossierEmailContext(Number(dossierId));
+    await sendAssuranceRequestEmail({
+      to: ASSURANCE_REQUEST_TO,
+      employeeName: ctx.employeeName,
+      departureDate: ctx.departureDate,
+      returnDate: ctx.returnDate,
+    });
+
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(500).json({ message: e.message });
+  }
+});
+
+// Envoyer mail billet
+app.post("/api/email/billet", authenticateToken, async (req, res) => {
+  try {
+    const { dossierId } = req.body;
+    if (!dossierId) return res.status(400).json({ message: "dossierId obligatoire" });
+
+    const ctx = await getDossierEmailContext(Number(dossierId));
+    await sendBilletRequestEmail({
+      to: BILLET_REQUEST_TO,
+      employeeName: ctx.employeeName,
+      departureDate: ctx.departureDate,
+      returnDate: ctx.returnDate,
+    });
+
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(500).json({ message: e.message });
+  }
+});
+
+// Changer statut dossier VISA
+app.patch("/api/visa-dossiers/:id/status", authenticateToken, async (req, res) => {
+  const dossierId = Number(req.params.id);
+  const { status, visaNumero, visaDateDebut, visaDateFin } = req.body;
+
+  if (!status) return res.status(400).json({ message: "status obligatoire" });
+
+  try {
+    await pool.query(
+      `UPDATE visa_dossiers
+       SET statut = $1,
+           numero_visa = COALESCE($2, numero_visa),
+           visa_date_debut = COALESCE($3, visa_date_debut),
+           visa_date_fin = COALESCE($4, visa_date_fin),
+           updated_at = now()
+       WHERE id = $5`,
+      [status, visaNumero || null, visaDateDebut || null, visaDateFin || null, dossierId]
+    );
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
+// --------------------------------------------------
+// PDF COMPLET DOSSIER VISA (fusion) — adapté au stockage VISA
+// --------------------------------------------------
+app.get("/api/visa-dossiers/:id/dossier-pdf", authenticateToken, async (req, res) => {
+  const dossierId = Number(req.params.id);
+
+  try {
+    const dossierRes = await pool.query(
+      `SELECT e.prenom, e.nom
+       FROM visa_dossiers d
+       JOIN employees e ON e.id = d.employee_id
+       WHERE d.id = $1`,
+      [dossierId]
+    );
+
+    if (!dossierRes.rows.length) {
+      return res.status(404).json({ message: "Dossier introuvable" });
+    }
+
+    const { prenom, nom } = dossierRes.rows[0];
+
+    const docsRes = await pool.query(
+      `SELECT file_url
+       FROM visa_documents
+       WHERE dossier_id = $1
+         AND statut = 'UPLOADED'
+         AND file_url IS NOT NULL
+       ORDER BY id ASC`,
+      [dossierId]
+    );
+
+    const docs = docsRes.rows.filter((d) =>
+      String(d.file_url).toLowerCase().endsWith(".pdf")
+    );
+
+    if (!docs.length) {
+      return res.status(400).json({
+        message: "Aucun document PDF uploadé à fusionner pour ce dossier.",
+      });
+    }
+
+    const mergedPdf = await PDFDocument.create();
+
+    function fileUrlToLocalPath(fileUrl) {
+      // Support URL absolue
+      let pathname = fileUrl;
+      if (fileUrl.startsWith("http")) {
+        pathname = decodeURIComponent(new URL(fileUrl).pathname);
+      }
+
+      // Maintenant c'est /api/visa-pdfs/<file>
+      const prefix = "/api/visa-pdfs/";
+      if (!pathname.startsWith(prefix)) {
+        throw new Error(`file_url invalide (doit commencer par ${prefix})`);
+      }
+
+      const filename = pathname.replace(prefix, "");
+      const localPath = path.join(visaPdfDir, filename);
+
+      const resolved = path.resolve(localPath);
+      const resolvedDir = path.resolve(visaPdfDir);
+      if (!resolved.startsWith(resolvedDir)) {
+        throw new Error("Chemin fichier non autorisé");
+      }
+      return resolved;
+    }
+
+    for (const d of docs) {
+      const localPath = fileUrlToLocalPath(d.file_url);
+
+      if (!fs.existsSync(localPath)) {
+        throw new Error(`Fichier introuvable : ${localPath}`);
+      }
+
+      const pdfBytes = fs.readFileSync(localPath);
+      const pdf = await PDFDocument.load(pdfBytes);
+
+      const pages = await mergedPdf.copyPages(pdf, pdf.getPageIndices());
+      pages.forEach((p) => mergedPdf.addPage(p));
+    }
+
+    const finalPdf = await mergedPdf.save();
+
+    const employeePart = safeFilename(`${prenom}_${nom}`);
+    const datePart = new Date().toISOString().slice(0, 10);
+    const filename = `Dossier_Visa_${employeePart}_${datePart}.pdf`;
+
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader("Content-Disposition", `inline; filename="${filename}"`);
+
+    return res.send(Buffer.from(finalPdf));
+  } catch (err) {
+    console.error("❌ dossier-pdf error:", err);
+    return res.status(500).json({
+      message: err.message || "Erreur génération PDF du dossier",
+    });
+  }
+});
+
+
+
 // =========================
 // Démarrage serveur
 // =========================
