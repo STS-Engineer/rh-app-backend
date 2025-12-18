@@ -198,6 +198,88 @@ const upload = multer({
   }
 });
 
+
+
+// Fonction pour télécharger un PDF depuis une URL - VERSION CORRIGÉE
+const downloadPDFFromUrl = async (url) => {
+  try {
+    console.log('📥 Téléchargement PDF depuis:', url);
+    
+    // Si c'est une URL locale (servie par notre backend)
+    if (url.includes('/api/pdfs/')) {
+      const filename = url.split('/api/pdfs/')[1];
+      const filePath = path.join(pdfStorageDir, filename);
+      if (fs.existsSync(filePath)) {
+        const data = fs.readFileSync(filePath);
+        console.log(`✅ PDF local téléchargé: ${filename} (${data.length} bytes)`);
+        return data;
+      } else {
+        console.error('❌ Fichier local non trouvé:', filePath);
+        return null;
+      }
+    }
+    
+    // Si c'est une URL complète (y compris notre propre backend)
+    if (url.includes('backend-rh.azurewebsites.net/api/pdfs/')) {
+      const filename = url.split('/api/pdfs/')[1];
+      const filePath = path.join(pdfStorageDir, filename);
+      if (fs.existsSync(filePath)) {
+        const data = fs.readFileSync(filePath);
+        console.log(`✅ PDF backend téléchargé: ${filename} (${data.length} bytes)`);
+        return data;
+      }
+    }
+    
+    // Si c'est une autre URL http/https
+    if (url.startsWith('http')) {
+      console.log('🌐 Tentative de téléchargement HTTP...');
+      try {
+        const https = require('https');
+        const http = require('http');
+        
+        return new Promise((resolve, reject) => {
+          const client = url.startsWith('https') ? https : http;
+          
+          const request = client.get(url, (response) => {
+            if (response.statusCode !== 200) {
+              reject(new Error(`Statut HTTP ${response.statusCode}`));
+              return;
+            }
+            
+            const chunks = [];
+            response.on('data', (chunk) => chunks.push(chunk));
+            response.on('end', () => {
+              const buffer = Buffer.concat(chunks);
+              console.log(`✅ PDF HTTP téléchargé: ${buffer.length} bytes`);
+              resolve(buffer);
+            });
+          });
+          
+          request.on('error', (err) => {
+            console.error('❌ Erreur requête HTTP:', err.message);
+            reject(err);
+          });
+          
+          request.setTimeout(10000, () => {
+            request.destroy();
+            reject(new Error('Timeout téléchargement'));
+          });
+        });
+      } catch (httpError) {
+        console.error('❌ Erreur téléchargement HTTP:', httpError.message);
+        return null;
+      }
+    }
+    
+    console.log('⚠️ URL non reconnue ou non traitable:', url);
+    return null;
+  } catch (error) {
+    console.error('❌ Erreur téléchargement PDF:', error.message);
+    return null;
+  }
+};
+
+
 // =========================
 // Configuration pour photos employés
 // =========================
