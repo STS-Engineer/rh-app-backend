@@ -2450,15 +2450,15 @@ async function sendVisaDossierCreationEmail({ to, employeeName }) {
         <li><b>Ramener une copie de la page 1 du passeport</b></li>
         <li><b>Ramener 2 photos d'identité</b></li>
         <li><b>Envoyer par mail une copie de l’historique CNSS</b> à
-          <a href="mailto:${EMAIL_FROM_VISA}">${EMAIL_FROM_VISA}</a>
+          <a href="mailto:${EMAIL_FROM}">${EMAIL_FROM}</a>
         </li>
       </ul>
-      <p>Merci,<br/>${EMAIL_FROM_NAME_VISA}</p>
+      <p>Merci,<br/>${EMAIL_FROM_NAME}</p>
     </div>
   `;
 
   return emailTransporter.sendMail({
-    from: `"${EMAIL_FROM_NAME_VISA}" <${EMAIL_FROM_VISA}>`,
+    from: `"${EMAIL_FROM_NAME}" <${EMAIL_FROM}>`,
     to,
     subject,
     html,
@@ -2476,12 +2476,12 @@ async function sendAssuranceRequestEmail({ to, employeeName, departureDate, retu
         <b>Date départ :</b> ${departureDate}<br/>
         <b>Date retour :</b> ${returnDate}
       </p>
-      <p>Merci,<br/>${EMAIL_FROM_NAME_VISA}</p>
+      <p>Merci,<br/>${EMAIL_FROM_NAME}</p>
     </div>
   `;
 
   return emailTransporter.sendMail({
-    from: `"${EMAIL_FROM_NAME_VISA}" <${EMAIL_FROM_VISA}>`,
+    from: `"${EMAIL_FROM_NAME}" <${EMAIL_FROM}>`,
     to,
     subject,
     html,
@@ -2499,12 +2499,12 @@ async function sendBilletRequestEmail({ to, employeeName, departureDate, returnD
         <b>Date départ :</b> ${departureDate}<br/>
         <b>Date retour :</b> ${returnDate}
       </p>
-      <p>Merci,<br/>${EMAIL_FROM_NAME_VISA}</p>
+      <p>Merci,<br/>${EMAIL_FROM_NAME}</p>
     </div>
   `;
 
   return emailTransporter.sendMail({
-    from: `"${EMAIL_FROM_NAME_VISA}" <${EMAIL_FROM_VISA}>`,
+    from: `"${EMAIL_FROM_NAME}" <${EMAIL_FROM}>`,
     to,
     subject,
     html,
