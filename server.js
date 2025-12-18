@@ -2605,7 +2605,7 @@ async function saveGeneratedDocxAndUpdateDoc({ buffer, filename, docId }) {
 // ==================================================
 
 // Liste dossiers VISA
-app.get("/api/visa-dossiers", authenticateToken, async (req, res) => {
+app.get("/api/visa-dossiers", async (req, res) => {
   try {
     const result = await pool.query(`
       SELECT 
@@ -2674,7 +2674,7 @@ app.get("/api/visa-dossiers", authenticateToken, async (req, res) => {
 });
 
 // Dossier VISA détail
-app.get("/api/visa-dossiers/:id", authenticateToken, async (req, res) => {
+app.get("/api/visa-dossiers/:id", async (req, res) => {
   const dossierId = Number(req.params.id);
   try {
     const dRes = await pool.query(
@@ -2726,7 +2726,7 @@ app.get("/api/visa-dossiers/:id", authenticateToken, async (req, res) => {
 });
 
 // Créer dossier VISA + template + email employé
-app.post("/api/visa-dossiers", authenticateToken, async (req, res) => {
+app.post("/api/visa-dossiers", async (req, res) => {
   const { employeeId, motif, departureDate, returnDate } = req.body;
 
   if (!employeeId || !motif || !departureDate || !returnDate) {
@@ -2786,7 +2786,6 @@ app.post("/api/visa-dossiers", authenticateToken, async (req, res) => {
 // Upload document VISA (PDF) — FormData field = pdfFile
 app.post(
   "/api/visa-documents/:id/upload",
-  authenticateToken,
   visaPdfUpload.single("pdfFile"),
   async (req, res) => {
     const docId = Number(req.params.id);
@@ -2822,7 +2821,7 @@ app.post(
 );
 
 // Mettre à jour doc (statut / url)
-app.patch("/api/visa-documents/:id", authenticateToken, async (req, res) => {
+app.patch("/api/visa-documents/:id", async (req, res) => {
   const docId = Number(req.params.id);
   const { status, fileUrl, originalFilename } = req.body;
 
@@ -2845,7 +2844,7 @@ app.patch("/api/visa-documents/:id", authenticateToken, async (req, res) => {
 });
 
 // Envoyer mail assurance
-app.post("/api/email/assurance", authenticateToken, async (req, res) => {
+app.post("/api/email/assurance", async (req, res) => {
   try {
     const { dossierId } = req.body;
     if (!dossierId) return res.status(400).json({ message: "dossierId obligatoire" });
@@ -2865,7 +2864,7 @@ app.post("/api/email/assurance", authenticateToken, async (req, res) => {
 });
 
 // Envoyer mail billet
-app.post("/api/email/billet", authenticateToken, async (req, res) => {
+app.post("/api/email/billet", async (req, res) => {
   try {
     const { dossierId } = req.body;
     if (!dossierId) return res.status(400).json({ message: "dossierId obligatoire" });
@@ -2885,7 +2884,7 @@ app.post("/api/email/billet", authenticateToken, async (req, res) => {
 });
 
 // Changer statut dossier VISA
-app.patch("/api/visa-dossiers/:id/status", authenticateToken, async (req, res) => {
+app.patch("/api/visa-dossiers/:id/status", async (req, res) => {
   const dossierId = Number(req.params.id);
   const { status, visaNumero, visaDateDebut, visaDateFin } = req.body;
 
@@ -2913,7 +2912,7 @@ app.patch("/api/visa-dossiers/:id/status", authenticateToken, async (req, res) =
 // ==================================================
 
 // Générer attestation de travail (DOCX)
-app.post("/api/attestation-travail", authenticateToken, async (req, res) => {
+app.post("/api/attestation-travail", async (req, res) => {
   const { employeId, docId } = req.body;
   if (!employeId || !docId) return res.status(400).json({ message: "employeId et docId obligatoires" });
 
@@ -2951,7 +2950,7 @@ app.post("/api/attestation-travail", authenticateToken, async (req, res) => {
 });
 
 // Générer invitation + prise en charge (DOCX)
-app.post("/api/invitation-prise-en-charge", authenticateToken, async (req, res) => {
+app.post("/api/invitation-prise-en-charge", async (req, res) => {
   const { employeId, dateDebutSejour, dateFinSejour, docId } = req.body;
   if (!employeId || !dateDebutSejour || !dateFinSejour || !docId) {
     return res.status(400).json({ message: "employeId, dates, docId obligatoires" });
@@ -2994,7 +2993,7 @@ app.post("/api/invitation-prise-en-charge", authenticateToken, async (req, res) 
 });
 
 // Générer ordre de mission (DOCX)
-app.post("/api/ordre-mission", authenticateToken, async (req, res) => {
+app.post("/api/ordre-mission", async (req, res) => {
   const { employeId, objectifMission, dateDebutMission, dateFinMission, docId } = req.body;
   if (!employeId || !objectifMission || !dateDebutMission || !dateFinMission || !docId) {
     return res.status(400).json({ message: "champs obligatoires manquants" });
@@ -3038,7 +3037,7 @@ app.post("/api/ordre-mission", authenticateToken, async (req, res) => {
 // --------------------------------------------------
 // PDF COMPLET DOSSIER VISA (fusion des PDF seulement)
 // --------------------------------------------------
-app.get("/api/visa-dossiers/:id/dossier-pdf", authenticateToken, async (req, res) => {
+app.get("/api/visa-dossiers/:id/dossier-pdf", async (req, res) => {
   const dossierId = Number(req.params.id);
 
   try {
