@@ -198,9 +198,6 @@ const upload = multer({
   }
 });
 
-
-
-
 // =========================
 // Configuration pour photos employés
 // =========================
@@ -846,22 +843,15 @@ app.post(
 );
 
 // Générer le PDF et le stocker localement
-// =========================
-// ROUTE GÉNÉRATION PDF AVEC FUSION
-// =========================
-
-// Générer le PDF et le stocker localement - VERSION AVEC FUSION
 app.post(
   '/api/dossier-rh/generate-pdf/:employeeId',
   authenticateToken,
   async (req, res) => {
     try {
       const { employeeId } = req.params;
-      const { photos: clientPhotos, dossierName, actionType = 'new' } = req.body;
+      const { photos: clientPhotos, dossierName } = req.body;
 
-      console.log('📄 Génération PDF pour employé:', employeeId, 
-        'dossier:', dossierName, 'action:', actionType,
-        'photos reçues:', clientPhotos?.length || 0);
+      console.log('📄 Génération PDF pour employé:', employeeId, 'dossier:', dossierName);
 
       if (!dossierName || !dossierName.trim()) {
         return res.status(400).json({ error: 'Nom de dossier manquant' });
@@ -880,18 +870,6 @@ app.post(
       }
 
       const employee = employeeResult.rows[0];
-      
-      // Vérifier si un dossier existe déjà
-      const hasExistingDossier = !!employee.dossier_rh;
-      console.log('📂 Dossier existant:', hasExistingDossier, 
-        'URL:', employee.dossier_rh ? 'Oui' : 'Non');
-
-      // Déterminer l'action réelle
-      let effectiveActionType = actionType;
-      if (actionType === 'merge' && !hasExistingDossier) {
-        effectiveActionType = 'new';
-        console.log('⚠️ Pas de dossier existant, passage en mode "new"');
-      }
 
       // Construire les chemins complets des photos
       const photos = clientPhotos.map(p => ({
@@ -899,131 +877,24 @@ app.post(
         path: path.join(uploadTempDir, p.filename)
       }));
 
-      console.log('📂 Chemins photos construits:', photos.length);
+      console.log('📂 Chemins photos construits:', photos);
 
       // Vérifier que les fichiers existent
       const missingFiles = photos.filter(p => !fs.existsSync(p.path));
       if (missingFiles.length > 0) {
-        console.error('❌ Fichiers manquants:', missingFiles.length);
+        console.error('❌ Fichiers manquants:', missingFiles);
         return res.status(400).json({
           error: 'Certaines photos sont introuvables sur le serveur',
           details: `${missingFiles.length} fichier(s) manquant(s)`
         });
       }
 
-      // Fonction pour télécharger un PDF depuis une URL
-     // Fonction pour télécharger un PDF depuis une URL - VERSION CORRIGÉE
-const downloadPDFFromUrl = async (url) => {
-  try {
-    console.log('📥 Téléchargement PDF depuis:', url);
-    
-    // Si c'est une URL locale (sert par notre backend)
-    if (url.includes('/api/pdfs/')) {
-      const filename = url.split('/api/pdfs/')[1];
-      const filePath = path.join(pdfStorageDir, filename);
-      if (fs.existsSync(filePath)) {
-        const data = fs.readFileSync(filePath);
-        console.log(`✅ PDF local téléchargé: ${filename} (${data.length} bytes)`);
-        return data;
-      }
-    }
-    
-    // Si c'est une URL Azure Blob Storage ou autre URL externe
-    if (url.startsWith('http')) {
-      // Utiliser node-fetch ou https module
-      try {
-        // Solution 1: Utiliser node-fetch (si installé)
-        // const fetch = require('node-fetch');
-        // const response = await fetch(url);
-        
-        // Solution 2: Utiliser le module https natif (recommandé)
-        const https = require('https');
-        const http = require('http');
-        
-        return new Promise((resolve, reject) => {
-          const client = url.startsWith('https') ? https : http;
-          
-          client.get(url, (response) => {
-            if (response.statusCode !== 200) {
-              reject(new Error(`Statut HTTP ${response.statusCode}`));
-              return;
-            }
-            
-            const chunks = [];
-            response.on('data', (chunk) => chunks.push(chunk));
-            response.on('end', () => {
-              const buffer = Buffer.concat(chunks);
-              console.log(`✅ PDF externe téléchargé: ${buffer.length} bytes`);
-              resolve(buffer);
-            });
-          }).on('error', (err) => {
-            console.error('❌ Erreur téléchargement HTTP:', err.message);
-            reject(err);
-          });
-        });
-      } catch (fetchError) {
-        console.error('❌ Erreur téléchargement fetch:', fetchError.message);
-        return null;
-      }
-    }
-    
-    console.log('⚠️ URL non reconnue:', url);
-    return null;
-  } catch (error) {
-    console.error('❌ Erreur téléchargement PDF:', error.message);
-    return null;
-  }
-};;
-
-      // Fonction pour fusionner des PDF
-      const mergePDFs = async (existingPDFBuffer, newPDFBuffer) => {
-        try {
-          console.log('🔄 Fusion des PDF...');
-          console.log(`   - PDF existant: ${existingPDFBuffer.length} bytes`);
-          console.log(`   - Nouveau PDF: ${newPDFBuffer.length} bytes`);
-          
-          const mergedPdf = await PDFDocument.create();
-          
-          // Ajouter les pages du PDF existant
-          if (existingPDFBuffer) {
-            const existingPdf = await PDFDocument.load(existingPDFBuffer);
-            const existingPages = await mergedPdf.copyPages(existingPdf, existingPdf.getPageIndices());
-            console.log(`   - Pages existantes: ${existingPages.length}`);
-            existingPages.forEach(page => mergedPdf.addPage(page));
-          }
-          
-          // Ajouter les pages du nouveau PDF
-          const newPdf = await PDFDocument.load(newPDFBuffer);
-          const newPages = await mergedPdf.copyPages(newPdf, newPdf.getPageIndices());
-          console.log(`   - Nouvelles pages: ${newPages.length}`);
-          newPages.forEach(page => mergedPdf.addPage(page));
-          
-          const mergedBytes = await mergedPdf.save();
-          console.log(`✅ Fusion réussie: ${mergedBytes.length} bytes, ${mergedPdf.getPageCount()} pages total`);
-          return Buffer.from(mergedBytes);
-        } catch (error) {
-          console.error('❌ Erreur fusion PDF:', error);
-          throw new Error(`Échec de la fusion: ${error.message}`);
-        }
-      };
-
       // Fonction pour générer et sauvegarder le PDF
-      const generateAndSavePDF = async (employee, photos, dossierName, effectiveActionType) => {
-        return new Promise(async (resolve, reject) => {
+      const generateAndSavePDF = (employee, photos, dossierName) => {
+        return new Promise((resolve, reject) => {
           try {
             console.log('🧾 Début génération PDF avec pdfkit...');
-            const doc = new PDFKitDocument({ 
-              size: 'A4', 
-              margin: 50,
-              info: {
-                Title: `Dossier RH - ${employee.prenom} ${employee.nom}`,
-                Author: 'RH Manager Application',
-                Subject: dossierName,
-                Keywords: 'dossier,rh,employé,documents',
-                CreationDate: new Date()
-              }
-            });
-            
+            const doc = new PDFKitDocument({ size: 'A4', margin: 50 });
             const buffers = [];
 
             doc.on('data', chunk => buffers.push(chunk));
@@ -1034,64 +905,17 @@ const downloadPDFFromUrl = async (url) => {
 
             doc.on('end', async () => {
               try {
-                const newPdfBuffer = Buffer.concat(buffers);
-                console.log(`📄 Nouveau PDF généré: ${newPdfBuffer.length} bytes`);
-                
-                let finalPdfBuffer = newPdfBuffer;
-                let fusionStatus = 'nouveau';
-                
-                // Si actionType est 'merge' et qu'il y a déjà un dossier
-                if (effectiveActionType === 'merge' && employee.dossier_rh) {
-                  console.log('🔄 Tentative de fusion avec le PDF existant...');
-                  const existingPdfBuffer = await downloadPDFFromUrl(employee.dossier_rh);
-                  
-                  if (existingPdfBuffer) {
-                    try {
-                      finalPdfBuffer = await mergePDFs(existingPdfBuffer, newPdfBuffer);
-                      fusionStatus = 'fusionné';
-                      console.log('✅ PDF fusionné avec succès');
-                    } catch (mergeError) {
-                      console.error('❌ Échec de la fusion, création d\'un nouveau PDF:', mergeError.message);
-                      // On continue avec le nouveau PDF seulement
-                      fusionStatus = 'nouveau-apres-echec-fusion';
-                    }
-                  } else {
-                    console.log('⚠️ Impossible de télécharger le PDF existant, création d\'un nouveau');
-                    fusionStatus = 'nouveau-apres-echec-telechargement';
-                  }
-                } else {
-                  console.log(`ℹ️ Action: ${effectiveActionType}, création d'un nouveau PDF`);
-                }
-                
-                // Générer un nom de fichier unique
-                const timestamp = Date.now();
-                const randomSuffix = Math.floor(Math.random() * 1000);
-                const fileName = `dossier-rh-${employee.matricule || 'EMP'}-${timestamp}-${randomSuffix}.pdf`;
+                const pdfBuffer = Buffer.concat(buffers);
+                const fileName = `dossier-${employee.matricule || 'EMP'}-${Date.now()}.pdf`;
                 console.log('💾 Sauvegarde locale du fichier:', fileName);
                 
                 const filePath = path.join(pdfStorageDir, fileName);
-                fs.writeFileSync(filePath, finalPdfBuffer);
+                fs.writeFileSync(filePath, pdfBuffer);
                 
                 const baseUrl = process.env.BACKEND_URL || 'https://backend-rh.azurewebsites.net';
                 const pdfUrl = `${baseUrl}/api/pdfs/${fileName}`;
                 
-                console.log(`✅ PDF sauvegardé localement: ${pdfUrl} (${finalPdfBuffer.length} bytes, ${fusionStatus})`);
-                
-                // Ajouter des métadonnées
-                await pool.query(
-                  'INSERT INTO pdf_metadata (employee_id, filename, original_name, url, fusion_status, page_count, file_size, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7, CURRENT_TIMESTAMP)',
-                  [
-                    employeeId,
-                    fileName,
-                    dossierName,
-                    pdfUrl,
-                    fusionStatus,
-                    effectiveActionType === 'merge' ? 'multiple' : 'single',
-                    finalPdfBuffer.length,
-                    timestamp
-                  ]
-                );
-                
+                console.log('✅ PDF sauvegardé localement:', pdfUrl);
                 resolve(pdfUrl);
               } catch (saveError) {
                 console.error('❌ Erreur sauvegarde locale:', saveError);
@@ -1099,16 +923,11 @@ const downloadPDFFromUrl = async (url) => {
               }
             });
 
-            // ========== CONTENU DU PDF ==========
-            
-            // Page de garde avec métadonnées
-            doc.fontSize(24).font('Helvetica-Bold').text('DOSSIER RH', { align: 'left' });
-            doc.moveDown(1);
-            
-            doc.fontSize(12).font('Helvetica').text(`Type: ${effectiveActionType === 'merge' ? 'AJOUT DE DOCUMENTS' : 'NOUVEAU DOSSIER'}`, { align: 'left' });
+            // Contenu du PDF
+            doc.fontSize(24).text('DOSSIER RH', { align: 'left' });
             doc.moveDown(2);
 
-            doc.fontSize(16).font('Helvetica-Bold').text(`Employé : ${employee.prenom} ${employee.nom}`);
+            doc.fontSize(16).text(`Employé : ${employee.prenom} ${employee.nom}`);
             doc.moveDown(0.5);
             doc.fontSize(14).text(`Matricule : ${employee.matricule || '-'}`);
             doc.moveDown(0.5);
@@ -1118,12 +937,9 @@ const downloadPDFFromUrl = async (url) => {
             doc.moveDown(0.5);
             doc.fontSize(14).text(`Nom du dossier : ${dossierName || '-'}`);
             doc.moveDown(0.5);
-            doc.fontSize(12).text(`Type d'ajout : ${effectiveActionType === 'merge' ? 'Ajout de documents au dossier existant' : 'Nouveau dossier'}`);
-            doc.moveDown(0.5);
-            doc.fontSize(12).text(`Date de génération : ${new Date().toLocaleDateString('fr-FR')} ${new Date().toLocaleTimeString('fr-FR')}`);
-            doc.moveDown(0.5);
-            doc.fontSize(10).text(`ID Employé : ${employee.id} | ID Dossier : ${Date.now()}`);
-            
+            doc
+              .fontSize(12)
+              .text(`Date de génération : ${new Date().toLocaleDateString('fr-FR')}`);
             doc.addPage();
 
             // Pages des photos
@@ -1144,78 +960,26 @@ const downloadPDFFromUrl = async (url) => {
                   const maxWidth = pageWidth - 100;
                   const maxHeight = pageHeight - 150;
 
-                  // En-tête de page
                   doc
                     .fontSize(12)
-                    .font('Helvetica-Bold')
-                    .text(`Document ${index + 1}/${photos.length}`, 50, 50);
-                  
-                  doc
-                    .fontSize(10)
-                    .font('Helvetica')
-                    .text(`Nom : ${photo.originalname || photo.filename}`, 50, 70);
-                  
-                  doc
-                    .fontSize(10)
-                    .text(`Date d'ajout : ${new Date().toLocaleDateString('fr-FR')}`, 50, 85);
+                    .text(`Photo : ${photo.originalname || photo.filename}`, 50, 50);
 
-                  // Image centrée
-                  try {
-                    doc.image(photo.path, {
-                      fit: [maxWidth, maxHeight],
-                      align: 'center',
-                      valign: 'center',
-                      x: 50,
-                      y: 120
-                    });
-                    
-                    // Pied de page
-                    doc
-                      .fontSize(8)
-                      .font('Helvetica-Oblique')
-                      .text(
-                        `Page ${index + 1} - ${effectiveActionType === 'merge' ? 'Ajout au dossier' : 'Nouveau dossier'}`,
-                        50,
-                        pageHeight - 40,
-                        { width: pageWidth - 100, align: 'center' }
-                      );
-                    
-                    console.log(`📄 Document ajouté au PDF: ${photo.originalname}`);
-                  } catch (imageError) {
-                    console.error(`❌ Erreur chargement image ${photo.filename}:`, imageError.message);
-                    doc
-                      .fontSize(10)
-                      .text(`[Image non disponible: ${photo.originalname}]`, 50, 120);
-                  }
-                } catch (pageError) {
+                  doc.image(photo.path, {
+                    fit: [maxWidth, maxHeight],
+                    align: 'center',
+                    valign: 'center',
+                    x: 50,
+                    y: 100
+                  });
+
+                  console.log('📄 Photo ajoutée au PDF:', photo.path);
+                } catch (imageError) {
                   console.error(
                     `❌ Erreur avec la photo ${photo.filename}:`,
-                    pageError.message
+                    imageError.message
                   );
                 }
               });
-            }
-
-            // Page de fin si fusion
-            if (effectiveActionType === 'merge') {
-              doc.addPage();
-              doc
-                .fontSize(16)
-                .font('Helvetica-Bold')
-                .text('📎 AJOUT DE DOCUMENTS TERMINÉ', { align: 'center' });
-              doc.moveDown(1);
-              doc
-                .fontSize(12)
-                .font('Helvetica')
-                .text(`${photos.length} document(s) ont été ajoutés au dossier existant.`, { align: 'center' });
-              doc.moveDown(0.5);
-              doc
-                .fontSize(10)
-                .text(`Dossier: ${dossierName}`, { align: 'center' });
-              doc.moveDown(0.5);
-              doc
-                .fontSize(10)
-                .text(`Date: ${new Date().toLocaleDateString('fr-FR')}`, { align: 'center' });
             }
 
             doc.end();
@@ -1226,9 +990,8 @@ const downloadPDFFromUrl = async (url) => {
         });
       };
 
-      const pdfUrl = await generateAndSavePDF(employee, photos, dossierName, effectiveActionType);
+      const pdfUrl = await generateAndSavePDF(employee, photos, dossierName);
 
-      // Mettre à jour l'URL du dossier dans la base
       const updateResult = await pool.query(
         'UPDATE employees SET dossier_rh = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2 RETURNING *',
         [pdfUrl, employeeId]
@@ -1250,19 +1013,11 @@ const downloadPDFFromUrl = async (url) => {
         }
       });
 
-      const message = effectiveActionType === 'merge' 
-        ? 'Documents ajoutés au dossier existant avec succès'
-        : 'Dossier RH créé avec succès';
-
-      console.log(`✅ ${message}`);
-      
       res.json({
         success: true,
-        message: message,
+        message: 'Dossier RH généré avec succès',
         pdfUrl: pdfUrl,
-        actionType: effectiveActionType,
-        employee: updateResult.rows[0],
-        fusion: effectiveActionType === 'merge'
+        employee: updateResult.rows[0]
       });
     } catch (error) {
       console.error('❌ Erreur génération PDF (route):', {
@@ -1271,8 +1026,7 @@ const downloadPDFFromUrl = async (url) => {
       });
       res.status(500).json({
         error: 'Erreur lors de la génération du PDF',
-        details: error.message,
-        actionType: req.body.actionType || 'new'
+        details: error.message
       });
     }
   }
@@ -2519,12 +2273,6 @@ app.use((err, req, res, next) => {
     message: err.message
   });
 });
-
-
-
-
-
-
 
 // =========================
 // Démarrage serveur
