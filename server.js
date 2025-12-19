@@ -2509,7 +2509,7 @@ for (const dir of [visaPdfDir, visaGeneratedDir]) {
 // ==================================================
 // ROUTES POUR SERVIR LES FICHIERS VISA
 // ==================================================
-app.get("/api/visa-pdfs/:filename", authenticateToken, (req, res) => {
+app.get("/api/visa-pdfs/:filename", (req, res) => {
   try {
     const filename = path.basename(req.params.filename);
     const filePath = path.join(visaPdfDir, filename);
@@ -2527,7 +2527,7 @@ app.get("/api/visa-pdfs/:filename", authenticateToken, (req, res) => {
   }
 });
 
-app.get("/api/visa-generated/:filename", authenticateToken, (req, res) => {
+app.get("/api/visa-generated/:filename", (req, res) => {
   try {
     const filename = path.basename(req.params.filename);
     const filePath = path.join(visaGeneratedDir, filename);
@@ -2581,8 +2581,7 @@ const visaPdfStorage = multer.diskStorage({
     const ext = (path.extname(safeName) || ".pdf").toLowerCase();
     const base = path.basename(safeName, ext) || "visa";
 
-    const uniqueSuffix = Date.now() + "-" + Math.round(Math.random() * 1e9);
-    cb(null, `${base}-${uniqueSuffix}${ext}`);
+    cb(null, `${base}-${ext}`);
   },
 });
 
