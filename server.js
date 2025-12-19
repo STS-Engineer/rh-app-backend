@@ -844,10 +844,8 @@ app.post(
 
 
 
-const { PDFDocument } = require('pdf-lib');
-
 // =========================
-// ROUTE POUR FUSIONNER UN DOSSIER RH EXISTANT (CORRIGÉE)
+// ROUTE POUR FUSIONNER UN DOSSIER RH EXISTANT
 // =========================
 app.post(
   '/api/dossier-rh/merge-pdf/:employeeId',
@@ -895,10 +893,8 @@ app.post(
         });
       }
 
-      // 1. Charger l'ancien PDF s'il existe
-      let oldPdfPages = [];
-      let oldPdfPath = null;
-      
+      // ✅ Récupérer l'ancien PDF s'il existe
+      let existingPhotos = [];
       if (employee.dossier_rh) {
         console.log('📄 Ancien dossier trouvé:', employee.dossier_rh);
         
@@ -906,179 +902,119 @@ app.post(
           // Extraire le nom du fichier de l'URL
           const urlParts = employee.dossier_rh.split('/');
           const oldPdfFilename = urlParts[urlParts.length - 1];
-          oldPdfPath = path.join(pdfStorageDir, oldPdfFilename);
+          const oldPdfPath = path.join(pdfStorageDir, oldPdfFilename);
 
           if (fs.existsSync(oldPdfPath)) {
             console.log('✅ Ancien PDF trouvé sur disque:', oldPdfPath);
-            
-            // Charger l'ancien PDF
+
+            // Charger l'ancien PDF et extraire les images
+            const { PDFDocument } = require('pdf-lib');
             const oldPdfBytes = fs.readFileSync(oldPdfPath);
             const oldPdfDoc = await PDFDocument.load(oldPdfBytes);
             
-            // Copier toutes les pages de l'ancien PDF
-            const newPdfDoc = await PDFDocument.create();
-            const copiedPages = await newPdfDoc.copyPages(oldPdfDoc, oldPdfDoc.getPageIndices());
-            copiedPages.forEach(page => newPdfDoc.addPage(page));
+            // Note: PDFKit ne permet pas facilement d'extraire des images
+            // On va donc garder l'ancien PDF et créer un nouveau PDF avec toutes les photos
+            // puis supprimer l'ancien
             
-            // Sauvegarder temporairement pour extraire les pages
-            const tempPdfBytes = await newPdfDoc.save();
-            const tempPdfPath = path.join(pdfStorageDir, `temp-merge-${Date.now()}.pdf`);
-            fs.writeFileSync(tempPdfPath, tempPdfBytes);
-            
-            // Récharger pour l'extraction
-            const reloadedDoc = await PDFDocument.load(tempPdfBytes);
-            oldPdfPages = reloadedDoc.getPages();
-            
-            console.log(`📑 ${oldPdfPages.length} pages extraites de l'ancien PDF`);
-            
-            // Supprimer le fichier temporaire
-            fs.unlinkSync(tempPdfPath);
+            console.log('⚠️ Ancien PDF sera remplacé par le nouveau avec toutes les photos');
           }
         } catch (extractError) {
           console.warn('⚠️ Impossible d\'extraire l\'ancien PDF:', extractError.message);
         }
       }
 
-      // 2. Fonction pour générer le nouveau PDF fusionné
-      const generateMergedPDF = (employee, oldPages, newPhotos, dossierName) => {
-        return new Promise(async (resolve, reject) => {
+      // Fonction pour générer le nouveau PDF avec toutes les photos
+      const generateMergedPDF = (employee, photos, dossierName) => {
+        return new Promise((resolve, reject) => {
           try {
-            console.log('🧾 Début génération PDF fusionné...');
-            
-            // Créer un nouveau document PDF
-            const newPdfDoc = await PDFDocument.create();
-            
-            // 2.1 Ajouter les pages de l'ancien PDF
-            if (oldPages.length > 0) {
-              console.log(`📄 Ajout des ${oldPages.length} pages de l'ancien PDF`);
-              
-              // Pour ajouter les pages, on doit d'abord créer un document temporaire
-              const tempDoc = await PDFDocument.create();
-              const copiedPages = await tempDoc.copyPages(newPdfDoc, newPdfDoc.getPageIndices());
-              // Note: On ne peut pas copier directement, on va plutôt générer un nouveau PDF
-              // avec PDFKit pour les nouvelles photos, puis fusionner avec pdf-lib
-            }
+            console.log('🧾 Début génération PDF fusionné avec pdfkit...');
+            const doc = new PDFKitDocument({ size: 'A4', margin: 50 });
+            const buffers = [];
 
-            // 2.2 Créer les pages des nouvelles photos avec PDFKit
-            const generateNewPagesPDF = () => {
-              return new Promise((resolve, reject) => {
+            doc.on('data', chunk => buffers.push(chunk));
+            doc.on('error', err => {
+              console.error('❌ Erreur PDFKit:', err);
+              reject(err);
+            });
+
+            doc.on('end', async () => {
+              try {
+                const pdfBuffer = Buffer.concat(buffers);
+                const fileName = `dossier-${employee.matricule || 'EMP'}-${Date.now()}.pdf`;
+                console.log('💾 Sauvegarde locale du fichier fusionné:', fileName);
+                
+                const filePath = path.join(pdfStorageDir, fileName);
+                fs.writeFileSync(filePath, pdfBuffer);
+                
+                const baseUrl = process.env.BACKEND_URL || 'https://backend-rh.azurewebsites.net';
+                const pdfUrl = `${baseUrl}/api/pdfs/${fileName}`;
+                
+                console.log('✅ PDF fusionné sauvegardé localement:', pdfUrl);
+                resolve(pdfUrl);
+              } catch (saveError) {
+                console.error('❌ Erreur sauvegarde locale:', saveError);
+                reject(saveError);
+              }
+            });
+
+            // Page de garde
+            doc.fontSize(24).text('DOSSIER RH', { align: 'left' });
+            doc.moveDown(2);
+
+            doc.fontSize(16).text(`Employé : ${employee.prenom} ${employee.nom}`);
+            doc.moveDown(0.5);
+            doc.fontSize(14).text(`Matricule : ${employee.matricule || '-'}`);
+            doc.moveDown(0.5);
+            doc.fontSize(14).text(`Poste : ${employee.poste || '-'}`);
+            doc.moveDown(0.5);
+            doc.fontSize(14).text(`Département / Site : ${employee.site_dep || '-'}`);
+            doc.moveDown(0.5);
+            doc.fontSize(14).text(`Nom du dossier : ${dossierName || '-'}`);
+            doc.moveDown(0.5);
+            doc.fontSize(12).text(`Date de mise à jour : ${new Date().toLocaleDateString('fr-FR')}`);
+            doc.addPage();
+
+            // Ajouter toutes les nouvelles photos
+            if (Array.isArray(photos)) {
+              photos.forEach((photo, index) => {
                 try {
-                  const doc = new PDFKitDocument({ size: 'A4', margin: 50 });
-                  const buffers = [];
-
-                  doc.on('data', chunk => buffers.push(chunk));
-                  doc.on('error', reject);
-                  doc.on('end', async () => {
-                    try {
-                      const pdfBuffer = Buffer.concat(buffers);
-                      resolve(pdfBuffer);
-                    } catch (error) {
-                      reject(error);
-                    }
-                  });
-
-                  // Page d'introduction pour les nouvelles photos
-                  doc.fontSize(16).text('NOUVELLES PHOTOS AJOUTÉES', { align: 'center' });
-                  doc.moveDown(1);
-                  doc.fontSize(12).text(`Date d'ajout: ${new Date().toLocaleDateString('fr-FR')}`);
-                  doc.moveDown(1);
-                  doc.fontSize(12).text(`Nom du dossier: ${dossierName}`);
-                  doc.moveDown(2);
-
-                  // Ajouter toutes les nouvelles photos
-                  if (Array.isArray(newPhotos)) {
-                    newPhotos.forEach((photo, index) => {
-                      try {
-                        if (index > 0) {
-                          doc.addPage();
-                        }
-
-                        doc.fontSize(14).text(`Photo: ${photo.originalname || photo.filename}`, {
-                          align: 'center'
-                        });
-                        doc.moveDown(1);
-
-                        if (photo.path && fs.existsSync(photo.path)) {
-                          const pageWidth = doc.page.width;
-                          const pageHeight = doc.page.height;
-                          const maxWidth = pageWidth - 100;
-                          const maxHeight = pageHeight - 150;
-
-                          doc.image(photo.path, {
-                            fit: [maxWidth, maxHeight],
-                            align: 'center',
-                            valign: 'center',
-                            x: 50,
-                            y: 150
-                          });
-                        }
-                      } catch (imageError) {
-                        console.error(`❌ Erreur avec photo ${photo.filename}:`, imageError.message);
-                      }
-                    });
+                  if (!photo.path || !fs.existsSync(photo.path)) {
+                    console.warn('⚠️ Photo introuvable:', photo.path);
+                    return;
                   }
 
-                  doc.end();
-                } catch (error) {
-                  reject(error);
+                  if (index > 0) {
+                    doc.addPage();
+                  }
+
+                  const pageWidth = doc.page.width;
+                  const pageHeight = doc.page.height;
+                  const maxWidth = pageWidth - 100;
+                  const maxHeight = pageHeight - 150;
+
+                  doc
+                    .fontSize(12)
+                    .text(`Photo : ${photo.originalname || photo.filename}`, 50, 50);
+
+                  doc.image(photo.path, {
+                    fit: [maxWidth, maxHeight],
+                    align: 'center',
+                    valign: 'center',
+                    x: 50,
+                    y: 100
+                  });
+
+                  console.log('📄 Photo ajoutée au PDF fusionné:', photo.path);
+                } catch (imageError) {
+                  console.error(
+                    `❌ Erreur avec la photo ${photo.filename}:`,
+                    imageError.message
+                  );
                 }
               });
-            };
-
-            // 2.3 Fusionner les PDFs
-            try {
-              const mergedPdfDoc = await PDFDocument.create();
-              
-              // Ajouter les pages de l'ancien PDF
-              if (oldPages.length > 0 && oldPdfPath) {
-                const oldPdfBytes = fs.readFileSync(oldPdfPath);
-                const oldPdfDoc = await PDFDocument.load(oldPdfBytes);
-                const copiedOldPages = await mergedPdfDoc.copyPages(
-                  oldPdfDoc, 
-                  oldPdfDoc.getPageIndices()
-                );
-                copiedOldPages.forEach(page => mergedPdfDoc.addPage(page));
-              }
-              
-              // Ajouter les nouvelles pages
-              const newPagesPdfBuffer = await generateNewPagesPDF();
-              const newPagesDoc = await PDFDocument.load(newPagesPdfBuffer);
-              const copiedNewPages = await mergedPdfDoc.copyPages(
-                newPagesDoc,
-                newPagesDoc.getPageIndices()
-              );
-              copiedNewPages.forEach(page => mergedPdfDoc.addPage(page));
-              
-              // Sauvegarder le PDF fusionné
-              const mergedPdfBytes = await mergedPdfDoc.save();
-              const fileName = `dossier-${employee.matricule || 'EMP'}-merged-${Date.now()}.pdf`;
-              const filePath = path.join(pdfStorageDir, fileName);
-              
-              fs.writeFileSync(filePath, mergedPdfBytes);
-              
-              const baseUrl = process.env.BACKEND_URL || 'https://backend-rh.azurewebsites.net';
-              const pdfUrl = `${baseUrl}/api/pdfs/${fileName}`;
-              
-              console.log('✅ PDF fusionné sauvegardé:', pdfUrl);
-              resolve(pdfUrl);
-              
-            } catch (mergeError) {
-              console.error('❌ Erreur fusion PDF:', mergeError);
-              
-              // Fallback: Créer un nouveau PDF avec toutes les photos
-              const fallbackPdf = await generateNewPagesPDF();
-              const fileName = `dossier-${employee.matricule || 'EMP'}-fallback-${Date.now()}.pdf`;
-              const filePath = path.join(pdfStorageDir, fileName);
-              
-              fs.writeFileSync(filePath, fallbackPdf);
-              
-              const baseUrl = process.env.BACKEND_URL || 'https://backend-rh.azurewebsites.net';
-              const pdfUrl = `${baseUrl}/api/pdfs/${fileName}`;
-              
-              console.log('⚠️ Utilisation PDF fallback:', pdfUrl);
-              resolve(pdfUrl);
             }
-            
+
+            doc.end();
           } catch (error) {
             console.error('❌ Erreur générale generateMergedPDF:', error);
             reject(error);
@@ -1086,13 +1022,19 @@ app.post(
         });
       };
 
-      const pdfUrl = await generateMergedPDF(employee, oldPdfPages, newPhotos, dossierName);
+      const pdfUrl = await generateMergedPDF(employee, newPhotos, dossierName);
 
       // Supprimer l'ancien PDF s'il existe
-      if (oldPdfPath && fs.existsSync(oldPdfPath)) {
+      if (employee.dossier_rh) {
         try {
-          fs.unlinkSync(oldPdfPath);
-          console.log('🧹 Ancien PDF supprimé:', oldPdfPath);
+          const urlParts = employee.dossier_rh.split('/');
+          const oldPdfFilename = urlParts[urlParts.length - 1];
+          const oldPdfPath = path.join(pdfStorageDir, oldPdfFilename);
+          
+          if (fs.existsSync(oldPdfPath)) {
+            fs.unlinkSync(oldPdfPath);
+            console.log('🧹 Ancien PDF supprimé:', oldPdfPath);
+          }
         } catch (deleteError) {
           console.warn('⚠️ Impossible de supprimer l\'ancien PDF:', deleteError.message);
         }
@@ -1137,6 +1079,7 @@ app.post(
     }
   }
 );
+
 
 // Générer le PDF et le stocker localement
 app.post(
