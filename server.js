@@ -3260,7 +3260,7 @@ app.post("/api/ordre-mission", authenticateToken, async (req, res) => {
 // --------------------------------------------------
 // PDF COMPLET DOSSIER VISA (fusion des PDF seulement)
 // --------------------------------------------------
-app.get("/api/visa-dossiers/:id/dossier-pdf", authenticateToken, async (req, res) => {
+app.get("/api/visa-dossiers/:id/dossier-pdf", async (req, res) => {
   const dossierId = Number(req.params.id);
 
   try {
