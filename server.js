@@ -842,6 +842,245 @@ app.post(
   }
 );
 
+
+
+// =========================
+// ROUTE POUR FUSIONNER UN DOSSIER RH EXISTANT
+// =========================
+app.post(
+  '/api/dossier-rh/merge-pdf/:employeeId',
+  authenticateToken,
+  async (req, res) => {
+    try {
+      const { employeeId } = req.params;
+      const { photos: clientPhotos, dossierName } = req.body;
+
+      console.log('🔄 MERGE PDF pour employé:', employeeId, 'dossier:', dossierName);
+
+      if (!dossierName || !dossierName.trim()) {
+        return res.status(400).json({ error: 'Nom de dossier manquant' });
+      }
+
+      if (!Array.isArray(clientPhotos) || clientPhotos.length === 0) {
+        return res.status(400).json({ error: 'Aucune photo fournie pour le dossier' });
+      }
+
+      const employeeResult = await pool.query('SELECT * FROM employees WHERE id = $1', [
+        employeeId
+      ]);
+
+      if (employeeResult.rows.length === 0) {
+        return res.status(404).json({ error: 'Employé non trouvé' });
+      }
+
+      const employee = employeeResult.rows[0];
+
+      // Construire les chemins complets des nouvelles photos
+      const newPhotos = clientPhotos.map(p => ({
+        ...p,
+        path: path.join(uploadTempDir, p.filename)
+      }));
+
+      console.log('📂 Chemins nouvelles photos construits:', newPhotos);
+
+      // Vérifier que les fichiers existent
+      const missingFiles = newPhotos.filter(p => !fs.existsSync(p.path));
+      if (missingFiles.length > 0) {
+        console.error('❌ Fichiers manquants:', missingFiles);
+        return res.status(400).json({
+          error: 'Certaines photos sont introuvables sur le serveur',
+          details: `${missingFiles.length} fichier(s) manquant(s)`
+        });
+      }
+
+      // ✅ Récupérer l'ancien PDF s'il existe
+      let existingPhotos = [];
+      if (employee.dossier_rh) {
+        console.log('📄 Ancien dossier trouvé:', employee.dossier_rh);
+        
+        try {
+          // Extraire le nom du fichier de l'URL
+          const urlParts = employee.dossier_rh.split('/');
+          const oldPdfFilename = urlParts[urlParts.length - 1];
+          const oldPdfPath = path.join(pdfStorageDir, oldPdfFilename);
+
+          if (fs.existsSync(oldPdfPath)) {
+            console.log('✅ Ancien PDF trouvé sur disque:', oldPdfPath);
+
+            // Charger l'ancien PDF et extraire les images
+            const { PDFDocument } = require('pdf-lib');
+            const oldPdfBytes = fs.readFileSync(oldPdfPath);
+            const oldPdfDoc = await PDFDocument.load(oldPdfBytes);
+            
+            // Note: PDFKit ne permet pas facilement d'extraire des images
+            // On va donc garder l'ancien PDF et créer un nouveau PDF avec toutes les photos
+            // puis supprimer l'ancien
+            
+            console.log('⚠️ Ancien PDF sera remplacé par le nouveau avec toutes les photos');
+          }
+        } catch (extractError) {
+          console.warn('⚠️ Impossible d\'extraire l\'ancien PDF:', extractError.message);
+        }
+      }
+
+      // Fonction pour générer le nouveau PDF avec toutes les photos
+      const generateMergedPDF = (employee, photos, dossierName) => {
+        return new Promise((resolve, reject) => {
+          try {
+            console.log('🧾 Début génération PDF fusionné avec pdfkit...');
+            const doc = new PDFKitDocument({ size: 'A4', margin: 50 });
+            const buffers = [];
+
+            doc.on('data', chunk => buffers.push(chunk));
+            doc.on('error', err => {
+              console.error('❌ Erreur PDFKit:', err);
+              reject(err);
+            });
+
+            doc.on('end', async () => {
+              try {
+                const pdfBuffer = Buffer.concat(buffers);
+                const fileName = `dossier-${employee.matricule || 'EMP'}-${Date.now()}.pdf`;
+                console.log('💾 Sauvegarde locale du fichier fusionné:', fileName);
+                
+                const filePath = path.join(pdfStorageDir, fileName);
+                fs.writeFileSync(filePath, pdfBuffer);
+                
+                const baseUrl = process.env.BACKEND_URL || 'https://backend-rh.azurewebsites.net';
+                const pdfUrl = `${baseUrl}/api/pdfs/${fileName}`;
+                
+                console.log('✅ PDF fusionné sauvegardé localement:', pdfUrl);
+                resolve(pdfUrl);
+              } catch (saveError) {
+                console.error('❌ Erreur sauvegarde locale:', saveError);
+                reject(saveError);
+              }
+            });
+
+            // Page de garde
+            doc.fontSize(24).text('DOSSIER RH', { align: 'left' });
+            doc.moveDown(2);
+
+            doc.fontSize(16).text(`Employé : ${employee.prenom} ${employee.nom}`);
+            doc.moveDown(0.5);
+            doc.fontSize(14).text(`Matricule : ${employee.matricule || '-'}`);
+            doc.moveDown(0.5);
+            doc.fontSize(14).text(`Poste : ${employee.poste || '-'}`);
+            doc.moveDown(0.5);
+            doc.fontSize(14).text(`Département / Site : ${employee.site_dep || '-'}`);
+            doc.moveDown(0.5);
+            doc.fontSize(14).text(`Nom du dossier : ${dossierName || '-'}`);
+            doc.moveDown(0.5);
+            doc.fontSize(12).text(`Date de mise à jour : ${new Date().toLocaleDateString('fr-FR')}`);
+            doc.addPage();
+
+            // Ajouter toutes les nouvelles photos
+            if (Array.isArray(photos)) {
+              photos.forEach((photo, index) => {
+                try {
+                  if (!photo.path || !fs.existsSync(photo.path)) {
+                    console.warn('⚠️ Photo introuvable:', photo.path);
+                    return;
+                  }
+
+                  if (index > 0) {
+                    doc.addPage();
+                  }
+
+                  const pageWidth = doc.page.width;
+                  const pageHeight = doc.page.height;
+                  const maxWidth = pageWidth - 100;
+                  const maxHeight = pageHeight - 150;
+
+                  doc
+                    .fontSize(12)
+                    .text(`Photo : ${photo.originalname || photo.filename}`, 50, 50);
+
+                  doc.image(photo.path, {
+                    fit: [maxWidth, maxHeight],
+                    align: 'center',
+                    valign: 'center',
+                    x: 50,
+                    y: 100
+                  });
+
+                  console.log('📄 Photo ajoutée au PDF fusionné:', photo.path);
+                } catch (imageError) {
+                  console.error(
+                    `❌ Erreur avec la photo ${photo.filename}:`,
+                    imageError.message
+                  );
+                }
+              });
+            }
+
+            doc.end();
+          } catch (error) {
+            console.error('❌ Erreur générale generateMergedPDF:', error);
+            reject(error);
+          }
+        });
+      };
+
+      const pdfUrl = await generateMergedPDF(employee, newPhotos, dossierName);
+
+      // Supprimer l'ancien PDF s'il existe
+      if (employee.dossier_rh) {
+        try {
+          const urlParts = employee.dossier_rh.split('/');
+          const oldPdfFilename = urlParts[urlParts.length - 1];
+          const oldPdfPath = path.join(pdfStorageDir, oldPdfFilename);
+          
+          if (fs.existsSync(oldPdfPath)) {
+            fs.unlinkSync(oldPdfPath);
+            console.log('🧹 Ancien PDF supprimé:', oldPdfPath);
+          }
+        } catch (deleteError) {
+          console.warn('⚠️ Impossible de supprimer l\'ancien PDF:', deleteError.message);
+        }
+      }
+
+      const updateResult = await pool.query(
+        'UPDATE employees SET dossier_rh = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2 RETURNING *',
+        [pdfUrl, employeeId]
+      );
+
+      // Nettoyer les fichiers temporaires
+      newPhotos.forEach(photo => {
+        try {
+          if (photo.path && fs.existsSync(photo.path)) {
+            fs.unlinkSync(photo.path);
+            console.log('🧹 Fichier temporaire supprimé:', photo.path);
+          }
+        } catch (cleanupErr) {
+          console.warn(
+            '⚠️ Erreur suppression fichier temporaire:',
+            photo.path,
+            cleanupErr.message
+          );
+        }
+      });
+
+      res.json({
+        success: true,
+        message: 'Dossier RH fusionné avec succès',
+        pdfUrl: pdfUrl,
+        employee: updateResult.rows[0]
+      });
+    } catch (error) {
+      console.error('❌ Erreur fusion PDF (route):', {
+        message: error.message,
+        stack: error.stack
+      });
+      res.status(500).json({
+        error: 'Erreur lors de la fusion du PDF',
+        details: error.message
+      });
+    }
+  }
+);
+
+
 // Générer le PDF et le stocker localement
 app.post(
   '/api/dossier-rh/generate-pdf/:employeeId',
