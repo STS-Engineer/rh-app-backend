@@ -2581,7 +2581,7 @@ const visaPdfStorage = multer.diskStorage({
     const ext = (path.extname(safeName) || ".pdf").toLowerCase();
     const base = path.basename(safeName, ext) || "visa";
 
-    cb(null, `${base}-${ext}`);
+    cb(null, `${base}${ext}`);
   },
 });
 
