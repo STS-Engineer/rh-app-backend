@@ -187,7 +187,7 @@ const storage = multer.diskStorage({
 const upload = multer({
   storage: storage,
   limits: {
-    fileSize: 1000 * 1024 * 1024 // 1000MB max
+    fileSize: 5000 * 1024 * 1024 // 1000MB max
   },
   fileFilter: function (req, file, cb) {
     if (file.mimetype.startsWith('image/')) {
@@ -215,7 +215,7 @@ const employeePhotoStorage = multer.diskStorage({
 const employeePhotoUpload = multer({
   storage: employeePhotoStorage,
   limits: {
-    fileSize: 100 * 1024 * 1024 //100MB max
+    fileSize: 1000 * 1024 * 1024 //100MB max
   },
   fileFilter: function (req, file, cb) {
     if (file.mimetype.startsWith('image/')) {
@@ -238,7 +238,7 @@ const uploadPaie = multer({
       cb(null, 'paie-' + uniqueSuffix + '.pdf');
     }
   }),
-  limits: { fileSize: 200 * 1024 * 1024 }, // 200MB max
+  limits: { fileSize: 2000 * 1024 * 1024 }, // 200MB max
   fileFilter: (req, file, cb) => {
     if (file.mimetype === 'application/pdf') {
       cb(null, true);
