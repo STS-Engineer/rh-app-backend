@@ -159,7 +159,7 @@ const archivePdfStorage = multer.diskStorage({
 const archivePdfUpload = multer({
   storage: archivePdfStorage,
   limits: {
-    fileSize: 200 * 1024 * 1024 // 200MB max
+    fileSize: 2000 * 1024 * 1024 // 200MB max
   },
   fileFilter: function (req, file, cb) {
     if (file.mimetype === 'application/pdf') {
@@ -215,7 +215,7 @@ const employeePhotoStorage = multer.diskStorage({
 const employeePhotoUpload = multer({
   storage: employeePhotoStorage,
   limits: {
-    fileSize: 1000 * 1024 * 1024 //100MB max
+    fileSize: 2000 * 1024 * 1024 //100MB max
   },
   fileFilter: function (req, file, cb) {
     if (file.mimetype.startsWith('image/')) {
@@ -808,7 +808,7 @@ app.post(
     console.log('📸 Requête reçue sur /api/dossier-rh/upload-photos');
     next();
   },
-  upload.array('photos', 10),
+  upload.array('photos', 30),
   async (req, res) => {
     try {
       console.log('📸 Upload photos - Files reçus:', req.files?.length || 0);
