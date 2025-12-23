@@ -1693,6 +1693,88 @@ app.post('/api/auth/login', async (req, res) => {
 // Routes Employés
 // =========================
 
+// =========================
+// ROUTE POUR SUPPRIMER LE DOSSIER RH
+// =========================
+app.delete('/api/employees/:id/dossier-rh', authenticateToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+    
+    console.log('🗑️ Suppression dossier RH pour employé ID:', id);
+
+    // Récupérer l'employé pour avoir l'URL du dossier RH
+    const employeeResult = await pool.query(
+      'SELECT id, nom, prenom, matricule, dossier_rh FROM employees WHERE id = $1',
+      [id]
+    );
+
+    if (employeeResult.rows.length === 0) {
+      return res.status(404).json({
+        success: false,
+        error: 'Employé non trouvé'
+      });
+    }
+
+    const employee = employeeResult.rows[0];
+    
+    if (!employee.dossier_rh) {
+      return res.status(400).json({
+        success: false,
+        error: 'Aucun dossier RH à supprimer'
+      });
+    }
+
+    // Extraire le nom du fichier PDF de l'URL
+    let pdfFilename = null;
+    try {
+      if (employee.dossier_rh) {
+        const urlParts = employee.dossier_rh.split('/');
+        pdfFilename = urlParts[urlParts.length - 1];
+        
+        if (pdfFilename) {
+          const pdfPath = path.join(pdfStorageDir, pdfFilename);
+          
+          // Supprimer le fichier PDF du système de fichiers
+          if (fs.existsSync(pdfPath)) {
+            fs.unlinkSync(pdfPath);
+            console.log('✅ Fichier PDF supprimé:', pdfFilename);
+          } else {
+            console.warn('⚠️ Fichier PDF non trouvé sur le serveur:', pdfPath);
+          }
+        }
+      }
+    } catch (fileError) {
+      console.warn('⚠️ Erreur lors de la suppression du fichier PDF:', fileError.message);
+      // On continue quand même car le fichier pourrait ne pas exister ou être ailleurs
+    }
+
+    // Mettre à jour la base de données pour supprimer le lien
+    const updateResult = await pool.query(
+      'UPDATE employees SET dossier_rh = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = $1 RETURNING *',
+      [id]
+    );
+
+    console.log('✅ Dossier RH supprimé pour:', `${employee.prenom} ${employee.nom}`);
+
+    res.json({
+      success: true,
+      message: 'Dossier RH supprimé avec succès',
+      employee: updateResult.rows[0],
+      deletedFile: pdfFilename
+    });
+
+  } catch (error) {
+    console.error('❌ Erreur suppression dossier RH:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Erreur lors de la suppression du dossier RH',
+      details: error.message
+    });
+  }
+});
+
+
+
 app.get('/api/employees', authenticateToken, async (req, res) => {
   try {
     console.log('👥 Récupération des employés actifs');
