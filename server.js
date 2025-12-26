@@ -490,14 +490,7 @@ async function sendContractEndAlert(employee) {
             <p><strong>Date de fin de contrat :</strong> <span style="color: #dc3545; font-weight: bold;">${formattedDate}</span></p>
           </div>
           
-          <div style="background: #e7f5ff; padding: 15px; border-radius: 5px; margin: 20px 0;">
-            <p><strong>📋 Actions recommandées :</strong></p>
-            <ol>
-              <li>Contacter l'employé pour discuter du renouvellement</li>
-              <li>Préparer les documents de renouvellement ou de fin de contrat</li>
-              <li>Planifier l'entretien de fin de contrat si nécessaire</li>
-            </ol>
-          </div>
+         
           
           <p>Cette alerte est envoyée automatiquement par le système RH.</p>
         </div>
