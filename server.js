@@ -2032,21 +2032,32 @@ app.put('/api/employees/:id', authenticateToken, async (req, res) => {
       mail_responsable2
     } = req.body;
 
+    console.log('📋 Données reçues pour mise à jour:', {
+      id,
+      matricule,
+      nom,
+      prenom,
+      date_fin_contrat
+    });
+
     // Validation des emails
     if (adresse_mail && !isValidEmail(adresse_mail)) {
       return res.status(400).json({
+        success: false,
         error: 'Adresse email de l\'employé invalide'
       });
     }
     
     if (mail_responsable1 && !isValidEmail(mail_responsable1)) {
       return res.status(400).json({
+        success: false,
         error: 'Adresse email du responsable 1 invalide'
       });
     }
     
     if (mail_responsable2 && !isValidEmail(mail_responsable2)) {
       return res.status(400).json({
+        success: false,
         error: 'Adresse email du responsable 2 invalide'
       });
     }
@@ -2058,13 +2069,15 @@ app.put('/api/employees/:id', authenticateToken, async (req, res) => {
       photoUrl = getDefaultAvatar(nom, prenom);
     }
 
+    // VÉRIFIEZ LE NOMBRE DE PARAMÈTRES :
+    // Vous avez 22 "?" dans la requête, donc 22 éléments dans le tableau
     const result = await pool.query(
       `
-       UPDATE employees 
-       SET matricule = $1, nom = $2, prenom = $3, cin = $4, passeport = $5,
+      UPDATE employees 
+      SET matricule = $1, nom = $2, prenom = $3, cin = $4, passeport = $5,
           date_emission_passport = $6, date_expiration_passport = $7,
           date_naissance = $8, poste = $9, site_dep = $10, type_contrat = $11,
-          date_debut = $12, date_fin_contrat = $13, salaire_brute = $14, // MODIFIÉ
+          date_debut = $12, date_fin_contrat = $13, salaire_brute = $14,
           photo = $15, dossier_rh = $16,
           date_depart = $17, pdf_archive_url = $18, 
           adresse_mail = $19, mail_responsable1 = $20, mail_responsable2 = $21,
@@ -2073,38 +2086,39 @@ app.put('/api/employees/:id', authenticateToken, async (req, res) => {
       RETURNING *
     `,
       [
-        matricule,
-        nom,
-        prenom,
-        cin,
-        passeport,
-        date_emission_passport || null,    
-        date_expiration_passport || null,  
-        date_naissance,
-        poste,
-        site_dep,
-        type_contrat,
-        date_debut,
-        date_fin_contrat || null,
-        salaire_brute,
-        photoUrl,
-        dossier_rh,
-        date_depart,
-        pdf_archive_url,
-        adresse_mail || null,
-        mail_responsable1 || null,
-        mail_responsable2 || null,
-        id
+        matricule,                    // $1
+        nom,                          // $2
+        prenom,                       // $3
+        cin,                          // $4
+        passeport,                    // $5
+        date_emission_passport || null,    // $6
+        date_expiration_passport || null,  // $7
+        date_naissance,               // $8
+        poste,                        // $9
+        site_dep,                     // $10
+        type_contrat,                 // $11
+        date_debut,                   // $12
+        date_fin_contrat || null,     // $13 (NOUVEAU)
+        salaire_brute,                // $14
+        photoUrl,                     // $15
+        dossier_rh,                   // $16
+        date_depart,                  // $17
+        pdf_archive_url,              // $18
+        adresse_mail || null,         // $19
+        mail_responsable1 || null,    // $20
+        mail_responsable2 || null,    // $21
+        id                            // $22
       ]
     );
 
     if (result.rows.length === 0) {
       return res.status(404).json({
+        success: false,
         error: 'Employé non trouvé'
       });
     }
 
-   console.log('✅ Employé mis à jour');
+    console.log('✅ Employé mis à jour avec succès');
     
     // Vérifier si besoin d'envoyer une alerte
     if (date_fin_contrat) {
@@ -2118,16 +2132,46 @@ app.put('/api/employees/:id', authenticateToken, async (req, res) => {
         const employee = result.rows[0];
         setTimeout(() => {
           sendContractEndAlert(employee);
-        }, 5000); // Attendre 5s avant d'envoyer l'alerte
+        }, 5000);
       }
     }
     
-    res.json(result.rows[0]);
+    res.json({
+      success: true,
+      data: result.rows[0],
+      message: 'Employé mis à jour avec succès'
+    });
   } catch (error) {
     console.error('❌ Erreur mise à jour employé:', error);
+    console.error('❌ Détails erreur:', {
+      code: error.code,
+      constraint: error.constraint,
+      detail: error.detail,
+      message: error.message,
+      stack: error.stack
+    });
+    
+    let errorMessage = "Erreur lors de la mise à jour de l'employé";
+    
+    if (error.code === '23505') {
+      if (error.constraint === 'employees_matricule_key') {
+        errorMessage = 'Le matricule existe déjà';
+      } else if (error.constraint === 'employees_cin_key') {
+        errorMessage = 'Le CIN existe déjà';
+      } else if (error.constraint === 'employees_adresse_mail_key') {
+        errorMessage = 'L\'adresse email existe déjà';
+      }
+    } else if (error.code === '22007') {
+      errorMessage = 'Format de date invalide';
+    } else if (error.message && error.message.includes('parameter')) {
+      errorMessage = 'Erreur de paramètres dans la requête SQL';
+    }
+    
     res.status(500).json({
-      error: "Erreur lors de la mise à jour de l'employé",
-      message: error.message
+      success: false,
+      error: errorMessage,
+      details: error.message,
+      code: error.code
     });
   }
 });
