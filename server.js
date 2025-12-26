@@ -45,7 +45,22 @@ const emailTransporter = nodemailer.createTransport({
   socketTimeout: 10000,
   debug: process.env.NODE_ENV === 'development'
 });
+// =========================
+// JOB PLANIFIÉ POUR LES ALERTES
+// =========================
 
+// Vérifier les alertes au démarrage
+setTimeout(() => {
+  checkContractEndAlerts();
+}, 10000); // Attendre 10s après le démarrage
+
+// Vérifier les alertes chaque jour à 8h00
+setInterval(() => {
+  const now = new Date();
+  if (now.getHours() === 8 && now.getMinutes() === 0) {
+    checkContractEndAlerts();
+  }
+}, 60000); // Vérifier chaque minute
 // =========================
 // Configuration de la base
 // =========================
@@ -392,6 +407,116 @@ async function sendEmail(to, subject, html) {
     throw error;
   }
 }
+
+// Fonction pour vérifier et envoyer les alertes de fin de contrat
+async function checkContractEndAlerts() {
+  try {
+    console.log('🔔 Vérification des alertes de fin de contrat...');
+    
+    // Calculer la date dans 1 mois
+    const now = new Date();
+    const oneMonthLater = new Date(now);
+    oneMonthLater.setMonth(oneMonthLater.getMonth() + 1);
+    const oneMonthLaterStr = oneMonthLater.toISOString().split('T')[0];
+    
+    // Trouver les employés dont la date de fin de contrat est dans 1 mois
+    const result = await pool.query(
+      `SELECT id, matricule, nom, prenom, date_fin_contrat, poste 
+       FROM employees 
+       WHERE date_fin_contrat = $1 
+         AND statut = 'actif' 
+         AND (last_contract_alert IS NULL OR last_contract_alert < CURRENT_DATE - INTERVAL '7 days')`,
+      [oneMonthLaterStr]
+    );
+    
+    console.log(`📊 ${result.rows.length} employé(s) avec fin de contrat dans 1 mois`);
+    
+    // Envoyer des alertes pour chaque employé
+    for (const employee of result.rows) {
+      await sendContractEndAlert(employee);
+      
+      // Mettre à jour la date de dernière alerte
+      await pool.query(
+        'UPDATE employees SET last_contract_alert = CURRENT_TIMESTAMP WHERE id = $1',
+        [employee.id]
+      );
+    }
+    
+    return result.rows;
+  } catch (error) {
+    console.error('❌ Erreur vérification alertes fin de contrat:', error);
+    return [];
+  }
+}
+
+// Fonction pour envoyer l'alerte email
+async function sendContractEndAlert(employee) {
+  try {
+    const emailTo = 'fethi.chaouachi@avocarbon.com';
+    const formattedDate = new Date(employee.date_fin_contrat).toLocaleDateString('fr-FR');
+    
+    const html = `
+      <!DOCTYPE html>
+      <html>
+      <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>⚠️ Alerte Fin de Contrat</title>
+        <style>
+          body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; max-width: 600px; margin: 0 auto; padding: 20px; }
+          .header { background: #dc3545; color: white; padding: 20px; text-align: center; border-radius: 8px 8px 0 0; }
+          .content { background: #f8f9fa; padding: 30px; border: 1px solid #e9ecef; border-top: none; border-radius: 0 0 8px 8px; }
+          .alert-box { background: #fff3cd; border: 2px solid #ffc107; padding: 20px; margin: 20px 0; border-radius: 5px; }
+          .employee-info { background: white; border: 1px solid #dee2e6; padding: 15px; margin: 20px 0; border-radius: 5px; }
+          .footer { margin-top: 30px; padding-top: 20px; border-top: 1px solid #e9ecef; color: #6c757d; font-size: 12px; text-align: center; }
+          .warning-icon { font-size: 24px; margin-right: 10px; }
+        </style>
+      </head>
+      <body>
+        <div class="header">
+          <h2>⚠️ ALERTE FIN DE CONTRAT</h2>
+        </div>
+        <div class="content">
+          <div class="alert-box">
+            <p><span class="warning-icon">⚠️</span> <strong>Alerte Préventive</strong></p>
+            <p>La date de fin de contrat d'un employé approche dans moins d'1 mois.</p>
+          </div>
+          
+          <div class="employee-info">
+            <h3>👤 Informations de l'employé</h3>
+            <p><strong>Nom complet :</strong> ${employee.prenom} ${employee.nom}</p>
+            <p><strong>Matricule :</strong> ${employee.matricule}</p>
+            <p><strong>Poste :</strong> ${employee.poste || 'Non spécifié'}</p>
+            <p><strong>Date de fin de contrat :</strong> <span style="color: #dc3545; font-weight: bold;">${formattedDate}</span></p>
+          </div>
+          
+          <div style="background: #e7f5ff; padding: 15px; border-radius: 5px; margin: 20px 0;">
+            <p><strong>📋 Actions recommandées :</strong></p>
+            <ol>
+              <li>Contacter l'employé pour discuter du renouvellement</li>
+              <li>Préparer les documents de renouvellement ou de fin de contrat</li>
+              <li>Planifier l'entretien de fin de contrat si nécessaire</li>
+            </ol>
+          </div>
+          
+          <p>Cette alerte est envoyée automatiquement par le système RH.</p>
+        </div>
+        <div class="footer">
+          <p>© ${new Date().getFullYear()} RH Manager - Administration STS</p>
+          <p>Ceci est un message automatique, merci de ne pas y répondre.</p>
+        </div>
+      </body>
+      </html>
+    `;
+    
+    await sendEmail(emailTo, `⚠️ Alerte Fin de Contrat - ${employee.prenom} ${employee.nom}`, html);
+    console.log(`✅ Alerte envoyée pour ${employee.prenom} ${employee.nom} (Fin contrat: ${formattedDate})`);
+    
+  } catch (error) {
+    console.error(`❌ Erreur envoi alerte pour ${employee.prenom} ${employee.nom}:`, error);
+  }
+}
+
 
 // =========================
 // NOUVELLES ROUTES POUR MOT DE PASSE OUBLIÉ
@@ -1896,6 +2021,7 @@ app.put('/api/employees/:id', authenticateToken, async (req, res) => {
       site_dep,
       type_contrat,
       date_debut,
+      date_fin_contrat,
       salaire_brute,
       photo,
       dossier_rh,
@@ -1934,15 +2060,16 @@ app.put('/api/employees/:id', authenticateToken, async (req, res) => {
 
     const result = await pool.query(
       `
-      UPDATE employees 
-      SET matricule = $1, nom = $2, prenom = $3, cin = $4, passeport = $5,
+       UPDATE employees 
+       SET matricule = $1, nom = $2, prenom = $3, cin = $4, passeport = $5,
           date_emission_passport = $6, date_expiration_passport = $7,
           date_naissance = $8, poste = $9, site_dep = $10, type_contrat = $11,
-          date_debut = $12, salaire_brute = $13, photo = $14, dossier_rh = $15,
-          date_depart = $16, pdf_archive_url = $17, 
-          adresse_mail = $18, mail_responsable1 = $19, mail_responsable2 = $20,
+          date_debut = $12, date_fin_contrat = $13, salaire_brute = $14, // MODIFIÉ
+          photo = $15, dossier_rh = $16,
+          date_depart = $17, pdf_archive_url = $18, 
+          adresse_mail = $19, mail_responsable1 = $20, mail_responsable2 = $21,
           updated_at = CURRENT_TIMESTAMP
-      WHERE id = $21
+      WHERE id = $22
       RETURNING *
     `,
       [
@@ -1951,13 +2078,14 @@ app.put('/api/employees/:id', authenticateToken, async (req, res) => {
         prenom,
         cin,
         passeport,
-        date_emission_passport || null,    // NOUVEAU
-        date_expiration_passport || null,  // NOUVEAU
+        date_emission_passport || null,    
+        date_expiration_passport || null,  
         date_naissance,
         poste,
         site_dep,
         type_contrat,
         date_debut,
+        date_fin_contrat || null,
         salaire_brute,
         photoUrl,
         dossier_rh,
@@ -1976,7 +2104,24 @@ app.put('/api/employees/:id', authenticateToken, async (req, res) => {
       });
     }
 
-    console.log('✅ Employé mis à jour');
+   console.log('✅ Employé mis à jour');
+    
+    // Vérifier si besoin d'envoyer une alerte
+    if (date_fin_contrat) {
+      const now = new Date();
+      const oneMonthLater = new Date(now);
+      oneMonthLater.setMonth(oneMonthLater.getMonth() + 1);
+      const contractEndDate = new Date(date_fin_contrat);
+      
+      // Si la date de fin est dans 1 mois, envoyer une alerte
+      if (contractEndDate.toDateString() === oneMonthLater.toDateString()) {
+        const employee = result.rows[0];
+        setTimeout(() => {
+          sendContractEndAlert(employee);
+        }, 5000); // Attendre 5s avant d'envoyer l'alerte
+      }
+    }
+    
     res.json(result.rows[0]);
   } catch (error) {
     console.error('❌ Erreur mise à jour employé:', error);
@@ -2004,6 +2149,7 @@ app.post('/api/employees', authenticateToken, async (req, res) => {
       site_dep,
       type_contrat,
       date_debut,
+      date_fin_contrat,
       salaire_brute,
       photo,
       dossier_rh,
@@ -2055,12 +2201,13 @@ app.post('/api/employees', authenticateToken, async (req, res) => {
 
       const result = await pool.query(
       `
-      INSERT INTO employees 
+       INSERT INTO employees 
       (matricule, nom, prenom, cin, passeport, 
-       date_emission_passport, date_expiration_passport,  -- NOUVEAU
-       date_naissance, poste, site_dep, type_contrat, date_debut, salaire_brute, photo, dossier_rh, 
+       date_emission_passport, date_expiration_passport,
+       date_naissance, poste, site_dep, type_contrat, 
+       date_debut, date_fin_contrat, salaire_brute, photo, dossier_rh, // MODIFIÉ
        adresse_mail, mail_responsable1, mail_responsable2, statut) 
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, 'actif')
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, 'actif')
       RETURNING *
     `,
       [
@@ -2076,6 +2223,7 @@ app.post('/api/employees', authenticateToken, async (req, res) => {
         site_dep,
         type_contrat,
         date_debut,
+        date_fin_contrat || null,
         parseFloat(salaire_brute),
         photoUrl,
         dossier_rh || null,
@@ -2086,6 +2234,26 @@ app.post('/api/employees', authenticateToken, async (req, res) => {
     );
 
     console.log('✅ Employé créé, ID:', result.rows[0].id);
+
+
+
+ // Vérifier si besoin d'envoyer une alerte
+    if (date_fin_contrat) {
+      const now = new Date();
+      const oneMonthLater = new Date(now);
+      oneMonthLater.setMonth(oneMonthLater.getMonth() + 1);
+      const contractEndDate = new Date(date_fin_contrat);
+      
+      // Si la date de fin est dans 1 mois, envoyer une alerte
+      if (contractEndDate.toDateString() === oneMonthLater.toDateString()) {
+        const employee = result.rows[0];
+        setTimeout(() => {
+          sendContractEndAlert(employee);
+        }, 5000);
+      }
+    }
+
+    
     res.json(result.rows[0]);
   } catch (error) {
     console.error('❌ Erreur création employé:', error);
@@ -2115,6 +2283,33 @@ app.post('/api/employees', authenticateToken, async (req, res) => {
         message: error.message
       });
     }
+  }
+});
+
+
+// Route pour vérifier manuellement les alertes de fin de contrat
+app.get('/api/contract-alerts/check', authenticateToken, async (req, res) => {
+  try {
+    const alerts = await checkContractEndAlerts();
+    
+    res.json({
+      success: true,
+      message: `Vérification terminée. ${alerts.length} alerte(s) envoyée(s).`,
+      alerts: alerts.map(e => ({
+        id: e.id,
+        nom: `${e.prenom} ${e.nom}`,
+        matricule: e.matricule,
+        date_fin_contrat: e.date_fin_contrat,
+        poste: e.poste
+      }))
+    });
+  } catch (error) {
+    console.error('❌ Erreur vérification manuelle:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Erreur lors de la vérification des alertes',
+      message: error.message
+    });
   }
 });
 
