@@ -2158,6 +2158,17 @@ app.post('/api/employees', authenticateToken, async (req, res) => {
       mail_responsable2
     } = req.body;
 
+    // Log des données reçues pour debug
+    console.log('📋 Données reçues:', {
+      matricule,
+      nom,
+      prenom,
+      cin,
+      poste,
+      adresse_mail,
+      date_fin_contrat
+    });
+
     if (
       !matricule ||
       !nom ||
@@ -2170,26 +2181,42 @@ app.post('/api/employees', authenticateToken, async (req, res) => {
       !salaire_brute ||
       !adresse_mail
     ) {
+      console.log('❌ Champs manquants:', {
+        matricule: !matricule,
+        nom: !nom,
+        prenom: !prenom,
+        cin: !cin,
+        poste: !poste,
+        site_dep: !site_dep,
+        type_contrat: !type_contrat,
+        date_debut: !date_debut,
+        salaire_brute: !salaire_brute,
+        adresse_mail: !adresse_mail
+      });
       return res.status(400).json({
+        success: false,
         error: 'Tous les champs obligatoires doivent être remplis'
       });
     }
 
     // Validation des emails
-    if (adresse_mail && !isValidEmail(adresse_mail)) {
+    if (!isValidEmail(adresse_mail)) {
       return res.status(400).json({
+        success: false,
         error: 'Adresse email de l\'employé invalide'
       });
     }
     
     if (mail_responsable1 && !isValidEmail(mail_responsable1)) {
       return res.status(400).json({
+        success: false,
         error: 'Adresse email du responsable 1 invalide'
       });
     }
     
     if (mail_responsable2 && !isValidEmail(mail_responsable2)) {
       return res.status(400).json({
+        success: false,
         error: 'Adresse email du responsable 2 invalide'
       });
     }
@@ -2199,15 +2226,18 @@ app.post('/api/employees', authenticateToken, async (req, res) => {
       photoUrl = getDefaultAvatar(nom, prenom);
     }
 
-      const result = await pool.query(
+    console.log('📝 Exécution requête INSERT avec photo URL:', photoUrl);
+
+    // REQUÊTE CORRIGÉE : 20 paramètres au lieu de 19
+    const result = await pool.query(
       `
-       INSERT INTO employees 
+      INSERT INTO employees 
       (matricule, nom, prenom, cin, passeport, 
        date_emission_passport, date_expiration_passport,
        date_naissance, poste, site_dep, type_contrat, 
-       date_debut, date_fin_contrat, salaire_brute, photo, dossier_rh, // MODIFIÉ
+       date_debut, date_fin_contrat, salaire_brute, photo, dossier_rh,
        adresse_mail, mail_responsable1, mail_responsable2, statut) 
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, 'actif')
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)
       RETURNING *
     `,
       [
@@ -2216,8 +2246,8 @@ app.post('/api/employees', authenticateToken, async (req, res) => {
         prenom,
         cin,
         passeport || null,
-        date_emission_passport || null,    // NOUVEAU
-        date_expiration_passport || null,  // NOUVEAU
+        date_emission_passport || null,
+        date_expiration_passport || null,
         date_naissance,
         poste,
         site_dep,
@@ -2229,15 +2259,14 @@ app.post('/api/employees', authenticateToken, async (req, res) => {
         dossier_rh || null,
         adresse_mail,
         mail_responsable1 || null,
-        mail_responsable2 || null
+        mail_responsable2 || null,
+        'actif'
       ]
     );
 
     console.log('✅ Employé créé, ID:', result.rows[0].id);
 
-
-
- // Vérifier si besoin d'envoyer une alerte
+    // Vérifier si besoin d'envoyer une alerte
     if (date_fin_contrat) {
       const now = new Date();
       const oneMonthLater = new Date(now);
@@ -2253,34 +2282,50 @@ app.post('/api/employees', authenticateToken, async (req, res) => {
       }
     }
 
+    res.json({
+      success: true,
+      data: result.rows[0],
+      message: 'Employé créé avec succès'
+    });
     
-    res.json(result.rows[0]);
   } catch (error) {
     console.error('❌ Erreur création employé:', error);
+    console.error('❌ Détails erreur:', {
+      code: error.code,
+      constraint: error.constraint,
+      detail: error.detail,
+      message: error.message
+    });
 
     if (error.code === '23505') {
       if (error.constraint === 'employees_matricule_key') {
         res.status(400).json({
+          success: false,
           error: 'Le matricule existe déjà'
         });
       } else if (error.constraint === 'employees_cin_key') {
         res.status(400).json({
+          success: false,
           error: 'Le CIN existe déjà'
         });
       } else if (error.constraint === 'employees_adresse_mail_key') {
-        res.status(500).json({
-          error: 'L\'adresse email existe déjà',
-          message: error.message
+        res.status(400).json({
+          success: false,
+          error: 'L\'adresse email existe déjà'
         });
       } else {
         res.status(400).json({
-          error: 'Violation de contrainte unique'
+          success: false,
+          error: 'Violation de contrainte unique',
+          details: error.detail
         });
       }
     } else {
       res.status(500).json({
+        success: false,
         error: "Erreur lors de la création de l'employé",
-        message: error.message
+        message: error.message,
+        code: error.code
       });
     }
   }
