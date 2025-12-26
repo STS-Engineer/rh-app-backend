@@ -452,7 +452,7 @@ async function checkContractEndAlerts() {
 // Fonction pour envoyer l'alerte email
 async function sendContractEndAlert(employee) {
   try {
-    const emailTo = 'fethi.chaouachi@avocarbon.com';
+    const emailTo = 'majed.messai@avocarbon.com';
     const formattedDate = new Date(employee.date_fin_contrat).toLocaleDateString('fr-FR');
     
     const html = `
