@@ -2862,64 +2862,6 @@ app.delete('/api/demandes/:id', authenticateToken, async (req, res) => {
   }
 });
 
-
-// =========================
-// Route pour les notifications de demandes
-// =========================
-app.get('/api/notifications/demandes/count', authenticateToken, async (req, res) => {
-  try {
-    console.log('🔔 Récupération du nombre de nouvelles demandes');
-    
-    // Compter les demandes avec statut "en_attente"
-    const result = await pool.query(
-      `SELECT COUNT(*) as count 
-       FROM demande_rh 
-       WHERE statut = 'en_attente'`
-    );
-    
-    const count = parseInt(result.rows[0].count) || 0;
-    
-    console.log(`📊 Demandes en attente: ${count}`);
-    
-    res.json({
-      success: true,
-      count: count,
-      lastUpdated: new Date().toISOString()
-    });
-    
-  } catch (error) {
-    console.error('❌ Erreur récupération notifications:', error);
-    res.status(500).json({
-      success: false,
-      error: 'Erreur lors de la récupération des notifications',
-      message: error.message
-    });
-  }
-});
-
-// Endpoint pour marquer les demandes comme lues (optionnel)
-app.post('/api/notifications/demandes/mark-as-read', authenticateToken, async (req, res) => {
-  try {
-    console.log('📌 Marquage des demandes comme lues');
-    
-    // Vous pourriez ajouter un champ "vue_par_admin" dans la table demande_rh
-    // Pour simplifier, on retourne juste un succès
-    
-    res.json({
-      success: true,
-      message: 'Notifications marquées comme lues'
-    });
-    
-  } catch (error) {
-    console.error('❌ Erreur marquage notifications:', error);
-    res.status(500).json({
-      success: false,
-      error: 'Erreur lors du marquage des notifications',
-      message: error.message
-    });
-  }
-});
-
 // ==================================================
 // =================== MODULE VISA ==================
 // ==================================================
