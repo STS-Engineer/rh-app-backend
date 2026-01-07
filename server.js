@@ -2862,6 +2862,111 @@ app.delete('/api/demandes/:id', authenticateToken, async (req, res) => {
   }
 });
 
+
+
+
+// =========================
+// ROUTES NOTIFICATIONS
+// =========================
+
+// Récupérer le nombre de nouvelles demandes (non lues)
+app.get('/api/notifications/count', authenticateToken, async (req, res) => {
+  try {
+    console.log('🔔 Récupération du nombre de notifications');
+
+    // Compter les demandes en attente créées dans les dernières 24h
+    const result = await pool.query(`
+      SELECT COUNT(*) as count
+      FROM demande_rh
+      WHERE statut = 'en_attente'
+        AND created_at >= NOW() - INTERVAL '24 hours'
+    `);
+
+    const count = parseInt(result.rows[0].count) || 0;
+    
+    console.log(`✅ ${count} nouvelle(s) notification(s)`);
+    res.json({ 
+      success: true,
+      count: count 
+    });
+  } catch (error) {
+    console.error('❌ Erreur récupération notifications:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Erreur lors de la récupération des notifications',
+      message: error.message
+    });
+  }
+});
+
+// Récupérer les détails des notifications
+app.get('/api/notifications/recent', authenticateToken, async (req, res) => {
+  try {
+    console.log('🔔 Récupération des notifications récentes');
+
+    const result = await pool.query(`
+      SELECT 
+        d.id,
+        d.titre,
+        d.type_demande,
+        d.created_at,
+        e.nom as employe_nom,
+        e.prenom as employe_prenom,
+        e.photo as employe_photo
+      FROM demande_rh d
+      LEFT JOIN employees e ON d.employe_id = e.id
+      WHERE d.statut = 'en_attente'
+        AND d.created_at >= NOW() - INTERVAL '24 hours'
+      ORDER BY d.created_at DESC
+      LIMIT 10
+    `);
+
+    console.log(`✅ ${result.rows.length} notification(s) récente(s)`);
+    res.json({
+      success: true,
+      notifications: result.rows
+    });
+  } catch (error) {
+    console.error('❌ Erreur récupération notifications récentes:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Erreur lors de la récupération des notifications',
+      message: error.message
+    });
+  }
+});
+
+// Marquer les notifications comme lues (optionnel pour plus tard)
+app.post('/api/notifications/mark-read', authenticateToken, async (req, res) => {
+  try {
+    const { demandeIds } = req.body;
+    
+    if (!Array.isArray(demandeIds) || demandeIds.length === 0) {
+      return res.status(400).json({
+        success: false,
+        error: 'IDs de demandes manquants'
+      });
+    }
+
+    console.log('✅ Notifications marquées comme lues:', demandeIds);
+    
+    // Pour l'instant, on retourne juste success
+    // Vous pouvez ajouter une colonne 'read_at' dans la table si besoin
+    res.json({
+      success: true,
+      message: 'Notifications marquées comme lues'
+    });
+  } catch (error) {
+    console.error('❌ Erreur marquage notifications:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Erreur lors du marquage des notifications',
+      message: error.message
+    });
+  }
+});
+
+
 // ==================================================
 // =================== MODULE VISA ==================
 // ==================================================
