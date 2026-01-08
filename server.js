@@ -2869,22 +2869,29 @@ app.delete('/api/demandes/:id', authenticateToken, async (req, res) => {
 // ROUTES NOTIFICATIONS
 // =========================
 
+// =========================
+// ROUTES NOTIFICATIONS AMÉLIORÉES
+// =========================
+
 // Récupérer le nombre de nouvelles demandes (non lues)
+// MODIFIÉ : Ne compte que les demandes non lues
 app.get('/api/notifications/count', authenticateToken, async (req, res) => {
   try {
-    console.log('🔔 Récupération du nombre de notifications');
+    console.log('🔔 Récupération du nombre de notifications non lues');
 
     // Compter les demandes en attente créées dans les dernières 24h
+    // qui n'ont pas été marquées comme lues
     const result = await pool.query(`
       SELECT COUNT(*) as count
       FROM demande_rh
       WHERE statut = 'en_attente'
         AND created_at >= NOW() - INTERVAL '24 hours'
+        AND (last_viewed_at IS NULL OR last_viewed_at < created_at)
     `);
 
     const count = parseInt(result.rows[0].count) || 0;
     
-    console.log(`✅ ${count} nouvelle(s) notification(s)`);
+    console.log(`✅ ${count} notification(s) non lue(s)`);
     res.json({ 
       success: true,
       count: count 
@@ -2900,6 +2907,7 @@ app.get('/api/notifications/count', authenticateToken, async (req, res) => {
 });
 
 // Récupérer les détails des notifications
+// MODIFIÉ : Inclure l'état de lecture
 app.get('/api/notifications/recent', authenticateToken, async (req, res) => {
   try {
     console.log('🔔 Récupération des notifications récentes');
@@ -2910,9 +2918,14 @@ app.get('/api/notifications/recent', authenticateToken, async (req, res) => {
         d.titre,
         d.type_demande,
         d.created_at,
+        d.last_viewed_at,
         e.nom as employe_nom,
         e.prenom as employe_prenom,
-        e.photo as employe_photo
+        e.photo as employe_photo,
+        CASE 
+          WHEN d.last_viewed_at IS NULL OR d.last_viewed_at < d.created_at THEN false
+          ELSE true
+        END as read
       FROM demande_rh d
       LEFT JOIN employees e ON d.employe_id = e.id
       WHERE d.statut = 'en_attente'
@@ -2936,48 +2949,19 @@ app.get('/api/notifications/recent', authenticateToken, async (req, res) => {
   }
 });
 
-// Marquer les notifications comme lues (optionnel pour plus tard)
-app.post('/api/notifications/mark-read', authenticateToken, async (req, res) => {
-  try {
-    const { demandeIds } = req.body;
-    
-    if (!Array.isArray(demandeIds) || demandeIds.length === 0) {
-      return res.status(400).json({
-        success: false,
-        error: 'IDs de demandes manquants'
-      });
-    }
-
-    console.log('✅ Notifications marquées comme lues:', demandeIds);
-    
-    // Pour l'instant, on retourne juste success
-    // Vous pouvez ajouter une colonne 'read_at' dans la table si besoin
-    res.json({
-      success: true,
-      message: 'Notifications marquées comme lues'
-    });
-  } catch (error) {
-    console.error('❌ Erreur marquage notifications:', error);
-    res.status(500).json({
-      success: false,
-      error: 'Erreur lors du marquage des notifications',
-      message: error.message
-    });
-  }
-});
-
-
-// Ajoutez ces routes dans votre server.js, après les routes notifications existantes
-
-// Route pour marquer une notification comme lue
+// NOUVELLE ROUTE : Marquer une notification comme lue
 app.post('/api/notifications/:id/mark-read', authenticateToken, async (req, res) => {
   try {
     const { id } = req.params;
     
     console.log('✅ Marquer notification comme lue:', id);
     
-    // Pour l'instant, on retourne juste un succès
-    // Vous pouvez implémenter une logique plus complexe si besoin
+    // Mettre à jour la date de dernière visualisation
+    await pool.query(
+      'UPDATE demande_rh SET last_viewed_at = CURRENT_TIMESTAMP WHERE id = $1',
+      [id]
+    );
+    
     res.json({
       success: true,
       message: 'Notification marquée comme lue'
@@ -2992,13 +2976,20 @@ app.post('/api/notifications/:id/mark-read', authenticateToken, async (req, res)
   }
 });
 
-// Route pour marquer toutes les notifications comme lues
+// NOUVELLE ROUTE : Marquer toutes les notifications comme lues
 app.post('/api/notifications/mark-all-read', authenticateToken, async (req, res) => {
   try {
     console.log('✅ Marquer toutes les notifications comme lues');
     
-    // Pour l'instant, on retourne juste un succès
-    // Vous pouvez implémenter une logique plus complexe si besoin
+    // Marquer toutes les notifications non lues comme lues
+    await pool.query(`
+      UPDATE demande_rh 
+      SET last_viewed_at = CURRENT_TIMESTAMP 
+      WHERE statut = 'en_attente'
+        AND created_at >= NOW() - INTERVAL '24 hours'
+        AND (last_viewed_at IS NULL OR last_viewed_at < created_at)
+    `);
+    
     res.json({
       success: true,
       message: 'Toutes les notifications marquées comme lues'
@@ -3008,6 +2999,39 @@ app.post('/api/notifications/mark-all-read', authenticateToken, async (req, res)
     res.status(500).json({
       success: false,
       error: 'Erreur lors du marquage des notifications',
+      message: error.message
+    });
+  }
+});
+
+// NOUVELLE ROUTE : Vérifier si une notification est lue
+app.get('/api/notifications/:id/status', authenticateToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+    
+    const result = await pool.query(`
+      SELECT 
+        CASE 
+          WHEN last_viewed_at IS NULL OR last_viewed_at < created_at THEN false
+          ELSE true
+        END as read
+      FROM demande_rh 
+      WHERE id = $1
+    `, [id]);
+    
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'Notification non trouvée' });
+    }
+    
+    res.json({
+      success: true,
+      read: result.rows[0].read
+    });
+  } catch (error) {
+    console.error('❌ Erreur vérification statut:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Erreur lors de la vérification du statut',
       message: error.message
     });
   }
