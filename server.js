@@ -2967,6 +2967,52 @@ app.post('/api/notifications/mark-read', authenticateToken, async (req, res) => 
 });
 
 
+// Ajoutez ces routes dans votre server.js, après les routes notifications existantes
+
+// Route pour marquer une notification comme lue
+app.post('/api/notifications/:id/mark-read', authenticateToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+    
+    console.log('✅ Marquer notification comme lue:', id);
+    
+    // Pour l'instant, on retourne juste un succès
+    // Vous pouvez implémenter une logique plus complexe si besoin
+    res.json({
+      success: true,
+      message: 'Notification marquée comme lue'
+    });
+  } catch (error) {
+    console.error('❌ Erreur marquage notification:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Erreur lors du marquage de la notification',
+      message: error.message
+    });
+  }
+});
+
+// Route pour marquer toutes les notifications comme lues
+app.post('/api/notifications/mark-all-read', authenticateToken, async (req, res) => {
+  try {
+    console.log('✅ Marquer toutes les notifications comme lues');
+    
+    // Pour l'instant, on retourne juste un succès
+    // Vous pouvez implémenter une logique plus complexe si besoin
+    res.json({
+      success: true,
+      message: 'Toutes les notifications marquées comme lues'
+    });
+  } catch (error) {
+    console.error('❌ Erreur marquage toutes notifications:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Erreur lors du marquage des notifications',
+      message: error.message
+    });
+  }
+});
+
 // ==================================================
 // =================== MODULE VISA ==================
 // ==================================================
