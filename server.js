@@ -189,30 +189,36 @@ const archivePdfUpload = multer({
 // Configuration Multer upload (Dossier RH)
 // =========================
 
+// =========================
+// Configuration Multer upload (Dossier RH) - IMAGES ET PDF
+// =========================
+
 const storage = multer.diskStorage({
   destination: function (req, file, cb) {
     cb(null, uploadTempDir);
   },
   filename: function (req, file, cb) {
     const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1e9);
-    cb(null, 'photo-' + uniqueSuffix + path.extname(file.originalname));
+    // Utiliser l'extension du fichier original
+    const ext = path.extname(file.originalname);
+    cb(null, 'file-' + uniqueSuffix + ext);
   }
 });
 
 const upload = multer({
   storage: storage,
   limits: {
-    fileSize: 5000 * 1024 * 1024 // 1000MB max
+    fileSize: 5000 * 1024 * 1024 // 5000MB max
   },
   fileFilter: function (req, file, cb) {
-    if (file.mimetype.startsWith('image/')) {
+    // ✅ ACCEPTER LES IMAGES ET LES PDF
+    if (file.mimetype.startsWith('image/') || file.mimetype === 'application/pdf') {
       cb(null, true);
     } else {
-      cb(new Error('Seules les images sont autorisées!'), false);
+      cb(new Error('Seules les images et les fichiers PDF sont autorisés!'), false);
     }
   }
 });
-
 // =========================
 // Configuration pour photos employés
 // =========================
