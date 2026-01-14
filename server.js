@@ -189,32 +189,26 @@ const archivePdfUpload = multer({
 // Configuration Multer upload (Dossier RH)
 // =========================
 
-// =========================
-// Configuration Multer upload (Dossier RH - Accepte images ET PDFs)
-// =========================
-
 const storage = multer.diskStorage({
   destination: function (req, file, cb) {
     cb(null, uploadTempDir);
   },
   filename: function (req, file, cb) {
     const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1e9);
-    const ext = path.extname(file.originalname);
-    cb(null, 'dossier-rh-' + uniqueSuffix + ext);
+    cb(null, 'photo-' + uniqueSuffix + path.extname(file.originalname));
   }
 });
 
 const upload = multer({
   storage: storage,
   limits: {
-    fileSize: 9000 * 1024 * 1024 // 9000MB max
+    fileSize: 5000 * 1024 * 1024 // 1000MB max
   },
   fileFilter: function (req, file, cb) {
-    // Accepter à la fois les images et les PDFs
-    if (file.mimetype.startsWith('image/') || file.mimetype === 'application/pdf') {
+    if (file.mimetype.startsWith('image/')) {
       cb(null, true);
     } else {
-      cb(new Error('Seules les images et les fichiers PDF sont autorisés!'), false);
+      cb(new Error('Seules les images sont autorisées!'), false);
     }
   }
 });
@@ -950,49 +944,47 @@ app.get('/api/employee-photos/:filename', (req, res) => {
 });
 
 // Upload des photos temporaires pour dossier RH
-// Upload des fichiers temporaires pour dossier RH (images ET PDFs)
 app.post(
-  '/api/dossier-rh/upload-files',
+  '/api/dossier-rh/upload-photos',
   authenticateToken,
   (req, res, next) => {
-    console.log('📁 Requête reçue sur /api/dossier-rh/upload-files');
+    console.log('📸 Requête reçue sur /api/dossier-rh/upload-photos');
     next();
   },
-  upload.array('files', 30),  // Changé de 'photos' à 'files'
+  upload.array('photos', 30),
   async (req, res) => {
     try {
-      console.log('📁 Upload fichiers - Files reçus:', req.files?.length || 0);
+      console.log('📸 Upload photos - Files reçus:', req.files?.length || 0);
       
       if (!req.files || req.files.length === 0) {
         console.log('❌ Aucun fichier reçu');
-        return res.status(400).json({ error: 'Aucun fichier uploadé' });
+        return res.status(400).json({ error: 'Aucune photo uploadée' });
       }
 
-      const fileInfos = req.files.map(file => ({
+      const photoInfos = req.files.map(file => ({
         filename: file.filename,
         originalname: file.originalname,
         size: file.size,
-        path: file.path,
-        mimetype: file.mimetype,
-        type: file.mimetype.startsWith('image/') ? 'image' : 'pdf'
+        path: file.path
       }));
 
-      console.log('✅ Fichiers uploadés:', fileInfos);
+      console.log('✅ Photos uploadées:', photoInfos);
 
       res.json({
         success: true,
-        files: fileInfos,
-        message: `${req.files.length} fichier(s) uploadé(s) avec succès`
+        photos: photoInfos,
+        message: `${req.files.length} photo(s) uploadée(s) avec succès`
       });
     } catch (error) {
-      console.error('❌ Erreur upload fichiers:', error);
+      console.error('❌ Erreur upload photos:', error);
       res.status(500).json({
-        error: "Erreur lors de l'upload des fichiers",
+        error: "Erreur lors de l'upload des photos",
         details: error.message
       });
     }
   }
 );
+
 
 
 // =========================
@@ -1045,84 +1037,68 @@ app.post(
       }
 
       // ✅ VRAIE FUSION PDF avec pdf-lib
-      // Modifier dans la fonction generateMergedPDF :
-const generateMergedPDF = async (employee, newFiles, dossierName) => {
-  const { PDFDocument } = require('pdf-lib');
-  
-  console.log('🔄 Début fusion PDF avec images et PDFs...');
-  
-  // Créer un nouveau PDF avec les nouvelles photos/images
-  const newPdfWithFiles = await new Promise((resolve, reject) => {
-    const doc = new PDFKitDocument({ size: 'A4', margin: 50 });
-    const buffers = [];
-
-    doc.on('data', chunk => buffers.push(chunk));
-    doc.on('error', reject);
-    doc.on('end', () => resolve(Buffer.concat(buffers)));
-
-    // Page de garde
-    doc.fontSize(24).text('DOSSIER RH - MISE À JOUR', { align: 'left' });
-    doc.moveDown(2);
-    doc.fontSize(16).text(`Employé : ${employee.prenom} ${employee.nom}`);
-    doc.moveDown(0.5);
-    doc.fontSize(14).text(`Matricule : ${employee.matricule || '-'}`);
-    doc.moveDown(0.5);
-    doc.fontSize(14).text(`Poste : ${employee.poste || '-'}`);
-    doc.moveDown(0.5);
-    doc.fontSize(14).text(`Nom du dossier : ${dossierName || '-'}`);
-    doc.moveDown(0.5);
-    doc.fontSize(12).text(`Date de mise à jour : ${new Date().toLocaleDateString('fr-FR')}`);
-    doc.addPage();
-
-    // Ajouter les nouveaux fichiers
-    newFiles.forEach((file, index) => {
-      try {
-        if (!file.path || !fs.existsSync(file.path)) {
-          console.warn('⚠️ Fichier introuvable:', file.path);
-          return;
-        }
-
-        if (index > 0) doc.addPage();
-
-        const pageWidth = doc.page.width;
-        const pageHeight = doc.page.height;
-        const maxWidth = pageWidth - 100;
-        const maxHeight = pageHeight - 150;
-
-        doc.fontSize(12).text(`Document : ${file.originalname || file.filename}`, 50, 50);
+      const generateMergedPDF = async (employee, newPhotos, dossierName) => {
+        const { PDFDocument } = require('pdf-lib');
         
-        if (file.mimetype.startsWith('image/')) {
-          // Ajouter une image
-          doc.image(file.path, {
-            fit: [maxWidth, maxHeight],
-            align: 'center',
-            valign: 'center',
-            x: 50,
-            y: 100
-          });
-          console.log('📸 Image ajoutée au PDF:', file.path);
-        } else if (file.mimetype === 'application/pdf') {
-          // Pour les PDFs, ajouter une note
-          doc.fontSize(14)
-             .fillColor('blue')
-             .text('📄 FICHIER PDF JOINT', { align: 'center', y: pageHeight / 2 });
+        console.log('🔄 Début VRAIE fusion PDF...');
+        
+        // ÉTAPE 1 : Créer un nouveau PDF avec les nouvelles photos
+        const newPdfWithPhotos = await new Promise((resolve, reject) => {
+          const doc = new PDFKitDocument({ size: 'A4', margin: 50 });
+          const buffers = [];
+
+          doc.on('data', chunk => buffers.push(chunk));
+          doc.on('error', reject);
+          doc.on('end', () => resolve(Buffer.concat(buffers)));
+
+          // Page de garde
+          doc.fontSize(24).text('DOSSIER RH - MISE À JOUR', { align: 'left' });
           doc.moveDown(2);
-          doc.fontSize(12)
-             .fillColor('black')
-             .text(`Le fichier PDF "${file.originalname}" est joint au dossier.`);
-          console.log('📄 PDF référencé:', file.path);
-        }
-      } catch (fileError) {
-        console.error(`❌ Erreur avec le fichier ${file.filename}:`, fileError.message);
-      }
-    });
+          doc.fontSize(16).text(`Employé : ${employee.prenom} ${employee.nom}`);
+          doc.moveDown(0.5);
+          doc.fontSize(14).text(`Matricule : ${employee.matricule || '-'}`);
+          doc.moveDown(0.5);
+          doc.fontSize(14).text(`Poste : ${employee.poste || '-'}`);
+          doc.moveDown(0.5);
+          doc.fontSize(14).text(`Nom du dossier : ${dossierName || '-'}`);
+          doc.moveDown(0.5);
+          doc.fontSize(12).text(`Date de mise à jour : ${new Date().toLocaleDateString('fr-FR')}`);
+          doc.addPage();
 
-    doc.end();
-  });
+          // Ajouter les nouvelles photos
+          newPhotos.forEach((photo, index) => {
+            try {
+              if (!photo.path || !fs.existsSync(photo.path)) {
+                console.warn('⚠️ Photo introuvable:', photo.path);
+                return;
+              }
 
-  console.log('✅ PDF des nouveaux fichiers créé');
+              if (index > 0) doc.addPage();
 
+              const pageWidth = doc.page.width;
+              const pageHeight = doc.page.height;
+              const maxWidth = pageWidth - 100;
+              const maxHeight = pageHeight - 150;
 
+              doc.fontSize(12).text(`Photo : ${photo.originalname || photo.filename}`, 50, 50);
+              doc.image(photo.path, {
+                fit: [maxWidth, maxHeight],
+                align: 'center',
+                valign: 'center',
+                x: 50,
+                y: 100
+              });
+
+              console.log('📄 Nouvelle photo ajoutée:', photo.path);
+            } catch (imageError) {
+              console.error(`❌ Erreur photo ${photo.filename}:`, imageError.message);
+            }
+          });
+
+          doc.end();
+        });
+
+        console.log('✅ PDF des nouvelles photos créé');
 
         // ÉTAPE 2 : Charger l'ancien PDF s'il existe
         let oldPdfPath = null;
@@ -1231,41 +1207,7 @@ const generateMergedPDF = async (employee, newFiles, dossierName) => {
   }
 );
 
-// Route pour servir les fichiers temporaires du dossier RH
-app.get('/api/temp-files/:filename', (req, res) => {
-  try {
-    const filename = req.params.filename;
-    const filePath = path.join(uploadTempDir, filename);
-    
-    console.log('📁 Demande fichier temporaire:', filename);
-    
-    if (!fs.existsSync(filePath)) {
-      console.error('❌ Fichier non trouvé:', filePath);
-      return res.status(404).json({ error: 'Fichier non trouvé' });
-    }
 
-    // Déterminer le type MIME
-    const ext = path.extname(filename).toLowerCase();
-    const mimeTypes = {
-      '.pdf': 'application/pdf',
-      '.jpg': 'image/jpeg',
-      '.jpeg': 'image/jpeg',
-      '.png': 'image/png',
-      '.gif': 'image/gif',
-      '.webp': 'image/webp'
-    };
-    
-    const contentType = mimeTypes[ext] || 'application/octet-stream';
-    
-    res.setHeader('Content-Type', contentType);
-    res.setHeader('Content-Disposition', `inline; filename="${filename}"`);
-    res.sendFile(filePath);
-    
-  } catch (error) {
-    console.error('❌ Erreur service fichier:', error);
-    res.status(500).json({ error: 'Erreur lors du chargement du fichier' });
-  }
-});
 // Générer le PDF et le stocker localement
 app.post(
   '/api/dossier-rh/generate-pdf/:employeeId',
