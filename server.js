@@ -1128,7 +1128,8 @@ app.post(
 
 // Fonction pour créer un nouveau dossier
 async function createNewDossier(employee, imageFiles, pdfFiles, dossierName) {
-  const { PDFDocument } = require('pdf-lib');
+  const { PDFDocument, rgb } = require('pdf-lib');
+  const { fromBuffer } = require('image-size');
   
   console.log('🆕 Création nouveau dossier...');
   
@@ -1137,31 +1138,133 @@ async function createNewDossier(employee, imageFiles, pdfFiles, dossierName) {
   
   // 1. Ajouter la page de garde
   const firstPage = pdfDoc.addPage([595.28, 841.89]); // A4
+  const { width, height } = firstPage.getSize();
   
-  // (Vous pouvez ajouter du contenu à la page de garde ici)
+  // Titre
+  firstPage.drawText(`DOSSIER RH - ${employee.prenom} ${employee.nom.toUpperCase()}`, {
+    x: 50,
+    y: height - 100,
+    size: 20,
+    color: rgb(0, 0, 0),
+  });
+  
+  // Informations
+  firstPage.drawText(`Matricule: ${employee.matricule || 'N/A'}`, {
+    x: 50,
+    y: height - 150,
+    size: 14,
+  });
+  
+  firstPage.drawText(`Poste: ${employee.poste || 'N/A'}`, {
+    x: 50,
+    y: height - 180,
+    size: 14,
+  });
+  
+  firstPage.drawText(`Nom du dossier: ${dossierName}`, {
+    x: 50,
+    y: height - 210,
+    size: 14,
+  });
+  
+  firstPage.drawText(`Date de création: ${new Date().toLocaleDateString('fr-FR')}`, {
+    x: 50,
+    y: height - 240,
+    size: 14,
+  });
   
   // 2. Ajouter les images
+  console.log(`📸 Traitement de ${imageFiles.length} image(s)...`);
+  
   for (const imageFile of imageFiles) {
     try {
+      console.log(`🖼️ Ajout image: ${imageFile.originalname}`);
+      
+      // Lire le fichier image
+      const imageBytes = fs.readFileSync(imageFile.path);
+      
+      // Déterminer le type d'image
+      let image;
+      if (imageFile.mimetype === 'image/jpeg' || imageFile.filename.toLowerCase().endsWith('.jpg') || imageFile.filename.toLowerCase().endsWith('.jpeg')) {
+        image = await pdfDoc.embedJpg(imageBytes);
+      } else if (imageFile.mimetype === 'image/png' || imageFile.filename.toLowerCase().endsWith('.png')) {
+        image = await pdfDoc.embedPng(imageBytes);
+      } else {
+        console.warn(`⚠️ Format d'image non supporté: ${imageFile.mimetype}`);
+        continue;
+      }
+      
+      // Créer une nouvelle page
       const page = pdfDoc.addPage([595.28, 841.89]);
-      // Ajouter l'image à la page
-      // Note: Vous aurez besoin de convertir l'image pour pdf-lib
-      // Pour simplifier, on pourrait utiliser une autre approche
+      const pageWidth = page.getWidth();
+      const pageHeight = page.getHeight();
+      
+      // Ajouter le nom du fichier en haut
+      page.drawText(`Image: ${imageFile.originalname}`, {
+        x: 50,
+        y: pageHeight - 50,
+        size: 12,
+        color: rgb(0, 0, 0),
+      });
+      
+      // Calculer les dimensions pour adapter l'image à la page
+      const maxWidth = pageWidth - 100; // Marges de 50px de chaque côté
+      const maxHeight = pageHeight - 100; // Réserver de l'espace pour le titre
+      
+      const imageDims = image.scaleToFit(maxWidth, maxHeight);
+      
+      // Centrer l'image
+      const x = (pageWidth - imageDims.width) / 2;
+      const y = (pageHeight - imageDims.height - 80) / 2 + 30; // Ajuster pour le titre
+      
+      page.drawImage(image, {
+        x,
+        y,
+        width: imageDims.width,
+        height: imageDims.height,
+      });
+      
+      console.log(`✅ Image ajoutée: ${imageFile.originalname}`);
     } catch (imageError) {
-      console.error(`❌ Erreur avec l'image ${imageFile.filename}:`, imageError);
+      console.error(`❌ Erreur avec l'image ${imageFile.filename}:`, imageError.message);
+      // Ajouter une page d'erreur
+      const errorPage = pdfDoc.addPage([595.28, 841.89]);
+      errorPage.drawText(`Erreur avec l'image: ${imageFile.originalname}`, {
+        x: 50,
+        y: 750,
+        size: 14,
+        color: rgb(1, 0, 0),
+      });
+      errorPage.drawText(`Message: ${imageError.message}`, {
+        x: 50,
+        y: 720,
+        size: 10,
+        color: rgb(0.5, 0, 0),
+      });
     }
   }
   
   // 3. Ajouter les PDFs existants
+  console.log(`📄 Ajout de ${pdfFiles.length} PDF(s) existant(s)...`);
+  
   for (const pdfFile of pdfFiles) {
     try {
+      console.log(`📄 Fusion PDF: ${pdfFile.originalname}`);
       const existingPdfBytes = fs.readFileSync(pdfFile.path);
       const existingPdf = await PDFDocument.load(existingPdfBytes);
       const copiedPages = await pdfDoc.copyPages(existingPdf, existingPdf.getPageIndices());
       copiedPages.forEach(page => pdfDoc.addPage(page));
-      console.log(`✅ PDF ajouté: ${pdfFile.originalname}`);
+      console.log(`✅ PDF ajouté: ${pdfFile.originalname} (${copiedPages.length} pages)`);
     } catch (pdfError) {
-      console.error(`❌ Erreur avec le PDF ${pdfFile.filename}:`, pdfError);
+      console.error(`❌ Erreur avec le PDF ${pdfFile.filename}:`, pdfError.message);
+      // Ajouter une page d'erreur
+      const errorPage = pdfDoc.addPage([595.28, 841.89]);
+      errorPage.drawText(`Erreur avec le PDF: ${pdfFile.originalname}`, {
+        x: 50,
+        y: 750,
+        size: 14,
+        color: rgb(1, 0, 0),
+      });
     }
   }
   
@@ -1175,18 +1278,117 @@ async function createNewDossier(employee, imageFiles, pdfFiles, dossierName) {
   const baseUrl = process.env.BACKEND_URL || 'https://backend-rh.azurewebsites.net';
   const pdfUrl = `${baseUrl}/api/pdfs/${fileName}`;
   
-  console.log('✅ Nouveau dossier créé:', pdfUrl);
+  console.log(`✅ Nouveau dossier créé: ${pdfUrl} (${pdfDoc.getPageCount()} pages)`);
   return pdfUrl;
 }
 
 // Fonction pour fusionner avec un dossier existant
 async function mergeWithExistingDossier(employee, imageFiles, pdfFiles, dossierName) {
-  const { PDFDocument } = require('pdf-lib');
+  const { PDFDocument, rgb } = require('pdf-lib');
   
   console.log('🔄 Fusion avec dossier existant...');
   
-  // Charger l'ancien PDF
-  let oldPdfDoc;
+  // Créer un nouveau document pour le contenu ajouté
+  const addedContentDoc = await PDFDocument.create();
+  
+  // Ajouter une page d'introduction pour les ajouts
+  const introPage = addedContentDoc.addPage([595.28, 841.89]);
+  const { width, height } = introPage.getSize();
+  
+  introPage.drawText('📄 AJOUT AU DOSSIER RH EXISTANT', {
+    x: 50,
+    y: height - 100,
+    size: 18,
+    color: rgb(0, 0.2, 0.6),
+  });
+  
+  introPage.drawText(`Employé: ${employee.prenom} ${employee.nom}`, {
+    x: 50,
+    y: height - 150,
+    size: 14,
+  });
+  
+  introPage.drawText(`Date d'ajout: ${new Date().toLocaleDateString('fr-FR')}`, {
+    x: 50,
+    y: height - 180,
+    size: 14,
+  });
+  
+  introPage.drawText(`Nom de l'ajout: ${dossierName}`, {
+    x: 50,
+    y: height - 210,
+    size: 14,
+  });
+  
+  introPage.drawText(`Documents ajoutés: ${imageFiles.length + pdfFiles.length} fichier(s)`, {
+    x: 50,
+    y: height - 240,
+    size: 14,
+  });
+  
+  // Ajouter les images
+  for (const imageFile of imageFiles) {
+    try {
+      console.log(`🖼️ Ajout image à la fusion: ${imageFile.originalname}`);
+      
+      const imageBytes = fs.readFileSync(imageFile.path);
+      let image;
+      
+      if (imageFile.mimetype === 'image/jpeg' || imageFile.filename.toLowerCase().endsWith('.jpg') || imageFile.filename.toLowerCase().endsWith('.jpeg')) {
+        image = await addedContentDoc.embedJpg(imageBytes);
+      } else if (imageFile.mimetype === 'image/png' || imageFile.filename.toLowerCase().endsWith('.png')) {
+        image = await addedContentDoc.embedPng(imageBytes);
+      } else {
+        console.warn(`⚠️ Format d'image non supporté pour la fusion: ${imageFile.mimetype}`);
+        continue;
+      }
+      
+      const page = addedContentDoc.addPage([595.28, 841.89]);
+      const pageWidth = page.getWidth();
+      const pageHeight = page.getHeight();
+      
+      page.drawText(`Image ajoutée: ${imageFile.originalname}`, {
+        x: 50,
+        y: pageHeight - 50,
+        size: 12,
+      });
+      
+      const maxWidth = pageWidth - 100;
+      const maxHeight = pageHeight - 100;
+      const imageDims = image.scaleToFit(maxWidth, maxHeight);
+      
+      const x = (pageWidth - imageDims.width) / 2;
+      const y = (pageHeight - imageDims.height - 80) / 2 + 30;
+      
+      page.drawImage(image, {
+        x,
+        y,
+        width: imageDims.width,
+        height: imageDims.height,
+      });
+      
+      console.log(`✅ Image ajoutée à la fusion: ${imageFile.originalname}`);
+    } catch (imageError) {
+      console.error(`❌ Erreur fusion image ${imageFile.filename}:`, imageError.message);
+    }
+  }
+  
+  // Ajouter les PDFs
+  for (const pdfFile of pdfFiles) {
+    try {
+      console.log(`📄 Fusion PDF: ${pdfFile.originalname}`);
+      const pdfBytes = fs.readFileSync(pdfFile.path);
+      const pdf = await PDFDocument.load(pdfBytes);
+      const copiedPages = await addedContentDoc.copyPages(pdf, pdf.getPageIndices());
+      copiedPages.forEach(page => addedContentDoc.addPage(page));
+      console.log(`✅ PDF ajouté à la fusion: ${pdfFile.originalname}`);
+    } catch (pdfError) {
+      console.error(`❌ Erreur fusion PDF ${pdfFile.filename}:`, pdfError.message);
+    }
+  }
+  
+  // Charger l'ancien PDF s'il existe
+  let finalPdfDoc;
   let oldPdfPath = null;
   
   if (employee.dossier_rh) {
@@ -1195,50 +1397,30 @@ async function mergeWithExistingDossier(employee, imageFiles, pdfFiles, dossierN
     oldPdfPath = path.join(pdfStorageDir, oldPdfFilename);
     
     if (fs.existsSync(oldPdfPath)) {
+      console.log('📄 Chargement de l\'ancien PDF...');
       const oldPdfBytes = fs.readFileSync(oldPdfPath);
-      oldPdfDoc = await PDFDocument.load(oldPdfBytes);
-      console.log('✅ Ancien PDF chargé:', oldPdfPath);
+      finalPdfDoc = await PDFDocument.load(oldPdfBytes);
     } else {
-      oldPdfDoc = await PDFDocument.create();
       console.warn('⚠️ Ancien PDF introuvable, création nouveau');
+      finalPdfDoc = await PDFDocument.create();
     }
   } else {
-    oldPdfDoc = await PDFDocument.create();
+    finalPdfDoc = await PDFDocument.create();
   }
   
-  // Créer un nouveau document pour les nouvelles pages
-  const newContentDoc = await PDFDocument.create();
+  // Fusionner le contenu ajouté
+  console.log('🔗 Fusion des documents...');
   
-  // Ajouter une page d'ajout
-  const updatePage = newContentDoc.addPage([595.28, 841.89]);
-  // (Ajouter du texte pour indiquer l'ajout)
+  // Copier les pages du contenu ajouté
+  const addedPages = await finalPdfDoc.copyPages(
+    addedContentDoc, 
+    addedContentDoc.getPageIndices()
+  );
   
-  // Ajouter les nouveaux PDFs
-  for (const pdfFile of pdfFiles) {
-    try {
-      const pdfBytes = fs.readFileSync(pdfFile.path);
-      const pdf = await PDFDocument.load(pdfBytes);
-      const copiedPages = await newContentDoc.copyPages(pdf, pdf.getPageIndices());
-      copiedPages.forEach(page => newContentDoc.addPage(page));
-      console.log(`✅ PDF ajouté à la fusion: ${pdfFile.originalname}`);
-    } catch (pdfError) {
-      console.error(`❌ Erreur fusion PDF ${pdfFile.filename}:`, pdfError);
-    }
-  }
+  addedPages.forEach(page => finalPdfDoc.addPage(page));
   
-  // Fusionner les documents
-  const mergedPdf = await PDFDocument.create();
-  
-  // 1. Copier toutes les pages de l'ancien PDF
-  const oldPages = await mergedPdf.copyPages(oldPdfDoc, oldPdfDoc.getPageIndices());
-  oldPages.forEach(page => mergedPdf.addPage(page));
-  
-  // 2. Copier toutes les pages du nouveau contenu
-  const newPages = await mergedPdf.copyPages(newContentDoc, newContentDoc.getPageIndices());
-  newPages.forEach(page => mergedPdf.addPage(page));
-  
-  // Sauvegarder
-  const mergedBytes = await mergedPdf.save();
+  // Sauvegarder le PDF fusionné
+  const mergedBytes = await finalPdfDoc.save();
   const fileName = `dossier-${employee.matricule || 'EMP'}-${Date.now()}-merged.pdf`;
   const filePath = path.join(pdfStorageDir, fileName);
   
@@ -1257,7 +1439,7 @@ async function mergeWithExistingDossier(employee, imageFiles, pdfFiles, dossierN
   const baseUrl = process.env.BACKEND_URL || 'https://backend-rh.azurewebsites.net';
   const pdfUrl = `${baseUrl}/api/pdfs/${fileName}`;
   
-  console.log('✅ Dossier fusionné:', pdfUrl);
+  console.log(`✅ Dossier fusionné: ${pdfUrl} (${finalPdfDoc.getPageCount()} pages total)`);
   return pdfUrl;
 }
 // Upload des photos temporaires pour dossier RH
