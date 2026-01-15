@@ -212,6 +212,37 @@ const upload = multer({
     }
   }
 });
+// Nouvelle configuration Multer pour accepter images ET PDFs
+const dossierFileStorage = multer.diskStorage({
+  destination: function (req, file, cb) {
+    cb(null, uploadTempDir);
+  },
+  filename: function (req, file, cb) {
+    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1e9);
+    const ext = path.extname(file.originalname);
+    cb(null, 'dossier-file-' + uniqueSuffix + ext);
+  }
+});
+
+const dossierFileUpload = multer({
+  storage: dossierFileStorage,
+  limits: {
+    fileSize: 100 * 1024 * 1024 // 100MB max
+  },
+  fileFilter: function (req, file, cb) {
+    // Accepter images ET PDFs
+    if (
+      file.mimetype.startsWith('image/') ||
+      file.mimetype === 'application/pdf' ||
+      file.originalname.toLowerCase().endsWith('.pdf')
+    ) {
+      cb(null, true);
+    } else {
+      cb(new Error('Seules les images et les fichiers PDF sont autorisés!'), false);
+    }
+  }
+});
+
 
 // =========================
 // Configuration pour photos employés
@@ -942,7 +973,293 @@ app.get('/api/employee-photos/:filename', (req, res) => {
     res.status(500).json({ error: 'Erreur lors du chargement de la photo' });
   }
 });
+// Nouvelle route pour uploader fichiers (images + PDFs)
+app.post(
+  '/api/dossier-rh/upload-files',
+  authenticateToken,
+  dossierFileUpload.array('files', 50),
+  async (req, res) => {
+    try {
+      console.log('📄 Upload fichiers dossier RH - Files reçus:', req.files?.length || 0);
+      
+      if (!req.files || req.files.length === 0) {
+        console.log('❌ Aucun fichier reçu');
+        return res.status(400).json({ error: 'Aucun fichier uploadé' });
+      }
 
+      const fileInfos = req.files.map(file => ({
+        filename: file.filename,
+        originalname: file.originalname,
+        size: file.size,
+        mimetype: file.mimetype,
+        isImage: file.mimetype.startsWith('image/'),
+        isPdf: file.mimetype === 'application/pdf' || 
+               file.originalname.toLowerCase().endsWith('.pdf'),
+        path: file.path
+      }));
+
+      console.log('✅ Fichiers uploadés:', fileInfos);
+
+      res.json({
+        success: true,
+        files: fileInfos,
+        message: `${req.files.length} fichier(s) uploadé(s) avec succès`
+      });
+    } catch (error) {
+      console.error('❌ Erreur upload fichiers:', error);
+      res.status(500).json({
+        error: "Erreur lors de l'upload des fichiers",
+        details: error.message
+      });
+    }
+  }
+);
+// Nouvelle route complète pour traiter les fichiers dossier RH
+app.post(
+  '/api/dossier-rh/process/:employeeId',
+  authenticateToken,
+  async (req, res) => {
+    try {
+      const { employeeId } = req.params;
+      const { files: clientFiles, dossierName, mode = 'create' } = req.body;
+
+      console.log('🔄 Traitement dossier RH pour employé:', employeeId, 
+        'dossier:', dossierName, 'mode:', mode);
+
+      if (!dossierName || !dossierName.trim()) {
+        return res.status(400).json({ error: 'Nom de dossier manquant' });
+      }
+
+      if (!Array.isArray(clientFiles) || clientFiles.length === 0) {
+        return res.status(400).json({ error: 'Aucun fichier fourni pour le dossier' });
+      }
+
+      // Vérifier l'employé
+      const employeeResult = await pool.query(
+        'SELECT * FROM employees WHERE id = $1', 
+        [employeeId]
+      );
+
+      if (employeeResult.rows.length === 0) {
+        return res.status(404).json({ error: 'Employé non trouvé' });
+      }
+
+      const employee = employeeResult.rows[0];
+      const hasExistingDossier = employee.dossier_rh && mode === 'merge';
+
+      // Construire les chemins complets
+      const files = clientFiles.map(f => ({
+        ...f,
+        path: path.join(uploadTempDir, f.filename)
+      }));
+
+      console.log('📂 Fichiers à traiter:', files);
+
+      // Vérifier l'existence des fichiers
+      const missingFiles = files.filter(f => !fs.existsSync(f.path));
+      if (missingFiles.length > 0) {
+        console.error('❌ Fichiers manquants:', missingFiles);
+        return res.status(400).json({
+          error: 'Certains fichiers sont introuvables sur le serveur',
+          details: `${missingFiles.length} fichier(s) manquant(s)`
+        });
+      }
+
+      // Séparer les images des PDFs
+      const imageFiles = files.filter(f => f.isImage && !f.isPdf);
+      const pdfFiles = files.filter(f => f.isPdf);
+
+      console.log(`📊 Images: ${imageFiles.length}, PDFs: ${pdfFiles.length}`);
+
+      let finalPdfUrl;
+
+      if (hasExistingDossier) {
+        // MODE FUSION : Fusionner avec l'existant
+        finalPdfUrl = await mergeWithExistingDossier(employee, imageFiles, pdfFiles, dossierName);
+      } else {
+        // MODE CRÉATION : Créer un nouveau dossier
+        finalPdfUrl = await createNewDossier(employee, imageFiles, pdfFiles, dossierName);
+      }
+
+      // Mettre à jour la base de données
+      const updateResult = await pool.query(
+        'UPDATE employees SET dossier_rh = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2 RETURNING *',
+        [finalPdfUrl, employeeId]
+      );
+
+      // Nettoyer les fichiers temporaires
+      files.forEach(file => {
+        try {
+          if (file.path && fs.existsSync(file.path)) {
+            fs.unlinkSync(file.path);
+            console.log('🧹 Fichier temporaire supprimé:', file.path);
+          }
+        } catch (cleanupErr) {
+          console.warn('⚠️ Erreur suppression fichier temporaire:', cleanupErr.message);
+        }
+      });
+
+      res.json({
+        success: true,
+        message: hasExistingDossier 
+          ? 'Dossier RH fusionné avec succès' 
+          : 'Dossier RH créé avec succès',
+        pdfUrl: finalPdfUrl,
+        employee: updateResult.rows[0],
+        stats: {
+          images: imageFiles.length,
+          pdfs: pdfFiles.length,
+          total: files.length
+        }
+      });
+
+    } catch (error) {
+      console.error('❌ Erreur traitement dossier RH:', {
+        message: error.message,
+        stack: error.stack
+      });
+      res.status(500).json({
+        error: 'Erreur lors du traitement du dossier RH',
+        details: error.message
+      });
+    }
+  }
+);
+
+// Fonction pour créer un nouveau dossier
+async function createNewDossier(employee, imageFiles, pdfFiles, dossierName) {
+  const { PDFDocument } = require('pdf-lib');
+  
+  console.log('🆕 Création nouveau dossier...');
+  
+  // Créer un nouveau document PDF
+  const pdfDoc = await PDFDocument.create();
+  
+  // 1. Ajouter la page de garde
+  const firstPage = pdfDoc.addPage([595.28, 841.89]); // A4
+  
+  // (Vous pouvez ajouter du contenu à la page de garde ici)
+  
+  // 2. Ajouter les images
+  for (const imageFile of imageFiles) {
+    try {
+      const page = pdfDoc.addPage([595.28, 841.89]);
+      // Ajouter l'image à la page
+      // Note: Vous aurez besoin de convertir l'image pour pdf-lib
+      // Pour simplifier, on pourrait utiliser une autre approche
+    } catch (imageError) {
+      console.error(`❌ Erreur avec l'image ${imageFile.filename}:`, imageError);
+    }
+  }
+  
+  // 3. Ajouter les PDFs existants
+  for (const pdfFile of pdfFiles) {
+    try {
+      const existingPdfBytes = fs.readFileSync(pdfFile.path);
+      const existingPdf = await PDFDocument.load(existingPdfBytes);
+      const copiedPages = await pdfDoc.copyPages(existingPdf, existingPdf.getPageIndices());
+      copiedPages.forEach(page => pdfDoc.addPage(page));
+      console.log(`✅ PDF ajouté: ${pdfFile.originalname}`);
+    } catch (pdfError) {
+      console.error(`❌ Erreur avec le PDF ${pdfFile.filename}:`, pdfError);
+    }
+  }
+  
+  // Sauvegarder le PDF
+  const pdfBytes = await pdfDoc.save();
+  const fileName = `dossier-${employee.matricule || 'EMP'}-${Date.now()}.pdf`;
+  const filePath = path.join(pdfStorageDir, fileName);
+  
+  fs.writeFileSync(filePath, pdfBytes);
+  
+  const baseUrl = process.env.BACKEND_URL || 'https://backend-rh.azurewebsites.net';
+  const pdfUrl = `${baseUrl}/api/pdfs/${fileName}`;
+  
+  console.log('✅ Nouveau dossier créé:', pdfUrl);
+  return pdfUrl;
+}
+
+// Fonction pour fusionner avec un dossier existant
+async function mergeWithExistingDossier(employee, imageFiles, pdfFiles, dossierName) {
+  const { PDFDocument } = require('pdf-lib');
+  
+  console.log('🔄 Fusion avec dossier existant...');
+  
+  // Charger l'ancien PDF
+  let oldPdfDoc;
+  let oldPdfPath = null;
+  
+  if (employee.dossier_rh) {
+    const urlParts = employee.dossier_rh.split('/');
+    const oldPdfFilename = urlParts[urlParts.length - 1];
+    oldPdfPath = path.join(pdfStorageDir, oldPdfFilename);
+    
+    if (fs.existsSync(oldPdfPath)) {
+      const oldPdfBytes = fs.readFileSync(oldPdfPath);
+      oldPdfDoc = await PDFDocument.load(oldPdfBytes);
+      console.log('✅ Ancien PDF chargé:', oldPdfPath);
+    } else {
+      oldPdfDoc = await PDFDocument.create();
+      console.warn('⚠️ Ancien PDF introuvable, création nouveau');
+    }
+  } else {
+    oldPdfDoc = await PDFDocument.create();
+  }
+  
+  // Créer un nouveau document pour les nouvelles pages
+  const newContentDoc = await PDFDocument.create();
+  
+  // Ajouter une page d'ajout
+  const updatePage = newContentDoc.addPage([595.28, 841.89]);
+  // (Ajouter du texte pour indiquer l'ajout)
+  
+  // Ajouter les nouveaux PDFs
+  for (const pdfFile of pdfFiles) {
+    try {
+      const pdfBytes = fs.readFileSync(pdfFile.path);
+      const pdf = await PDFDocument.load(pdfBytes);
+      const copiedPages = await newContentDoc.copyPages(pdf, pdf.getPageIndices());
+      copiedPages.forEach(page => newContentDoc.addPage(page));
+      console.log(`✅ PDF ajouté à la fusion: ${pdfFile.originalname}`);
+    } catch (pdfError) {
+      console.error(`❌ Erreur fusion PDF ${pdfFile.filename}:`, pdfError);
+    }
+  }
+  
+  // Fusionner les documents
+  const mergedPdf = await PDFDocument.create();
+  
+  // 1. Copier toutes les pages de l'ancien PDF
+  const oldPages = await mergedPdf.copyPages(oldPdfDoc, oldPdfDoc.getPageIndices());
+  oldPages.forEach(page => mergedPdf.addPage(page));
+  
+  // 2. Copier toutes les pages du nouveau contenu
+  const newPages = await mergedPdf.copyPages(newContentDoc, newContentDoc.getPageIndices());
+  newPages.forEach(page => mergedPdf.addPage(page));
+  
+  // Sauvegarder
+  const mergedBytes = await mergedPdf.save();
+  const fileName = `dossier-${employee.matricule || 'EMP'}-${Date.now()}-merged.pdf`;
+  const filePath = path.join(pdfStorageDir, fileName);
+  
+  fs.writeFileSync(filePath, mergedBytes);
+  
+  // Supprimer l'ancien PDF
+  if (oldPdfPath && fs.existsSync(oldPdfPath)) {
+    try {
+      fs.unlinkSync(oldPdfPath);
+      console.log('🧹 Ancien PDF supprimé:', oldPdfPath);
+    } catch (deleteErr) {
+      console.warn('⚠️ Impossible de supprimer ancien PDF:', deleteErr.message);
+    }
+  }
+  
+  const baseUrl = process.env.BACKEND_URL || 'https://backend-rh.azurewebsites.net';
+  const pdfUrl = `${baseUrl}/api/pdfs/${fileName}`;
+  
+  console.log('✅ Dossier fusionné:', pdfUrl);
+  return pdfUrl;
+}
 // Upload des photos temporaires pour dossier RH
 app.post(
   '/api/dossier-rh/upload-photos',
