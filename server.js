@@ -1948,7 +1948,7 @@ function extraireMatricule(texte) {
     
     if (line.includes('MATE') || line.includes('MATR')) {
       const nextLine = i + 1 < lines.length ? lines[i + 1] : '';
-      const numbers = nextLine.match(/\b(\d{2,3})\b/g);
+      const numbers = nextLine.match(/\b(\d{1,3})\b/g);
       
       if (numbers && numbers.length > 0) {
         console.log(`✅ Matricule trouvé dans ligne suivante: ${numbers[0]}`);
