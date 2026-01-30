@@ -3531,7 +3531,54 @@ app.get('/api/notifications/:id/status', authenticateToken, async (req, res) => 
     });
   }
 });
+// =========================
+// ROUTE POUR ÉTAT DES LIEUX (OPTIMISÉE)
+// =========================
 
+app.get('/api/presence/overview', authenticateToken, async (req, res) => {
+  try {
+    const { startDate, endDate } = req.query;
+    
+    const employeesQuery = await pool.query(`
+      SELECT id, matricule, nom, prenom, poste, photo
+      FROM employees 
+      WHERE statut = 'actif'
+      ORDER BY nom, prenom
+    `);
+    
+    const employees = employeesQuery.rows;
+    
+    const demandesQuery = await pool.query(`
+      SELECT d.*, e.nom as employe_nom, e.prenom as employe_prenom
+      FROM demande_rh d
+      LEFT JOIN employees e ON d.employe_id = e.id
+      WHERE d.statut = 'approuve'
+        AND d.date_depart <= $1
+        AND (d.date_retour IS NULL OR d.date_retour >= $2)
+      ORDER BY d.date_depart
+    `, [endDate || '2999-12-31', startDate || '1900-01-01']);
+    
+    const demandes = demandesQuery.rows;
+    
+    res.json({
+      success: true,
+      employees: employees,
+      demandes: demandes,
+      dateRange: {
+        start: startDate,
+        end: endDate
+      }
+    });
+    
+  } catch (error) {
+    console.error('❌ Erreur récupération état des lieux:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Erreur lors de la récupération des données',
+      message: error.message
+    });
+  }
+});
 // ==================================================
 // =================== MODULE VISA ==================
 // ==================================================
