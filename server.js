@@ -4454,6 +4454,231 @@ app.get("/api/visa-dossiers/:id/dossier-pdf", async (req, res) => {
     });
   }
 });
+// =============================================================
+// ✅ NOUVELLES ROUTES : APPROUVER / REFUSER DEPUIS L'APPLICATION
+// Coller dans server.js JUSTE AVANT le bloc "Fallback & erreurs"
+// c'est-à-dire juste avant : app.use('*', (req, res) => { ...
+// =============================================================
+
+function formatDateShortApp(date) {
+  if (!date) return '';
+  const d = new Date(date);
+  if (isNaN(d.getTime())) return String(date);
+  return d.toLocaleDateString('fr-FR');
+}
+
+function getTypeCongeTextApp(type_conge, type_conge_autre) {
+  if (!type_conge) return '';
+  if (type_conge === 'annuel') return 'Congé annuel';
+  if (type_conge === 'sans_solde') return 'Congé sans solde';
+  if (type_conge === 'autre') return `Autre${type_conge_autre ? ` (${type_conge_autre})` : ''}`;
+  return type_conge;
+}
+
+// ─── APPROUVER DEPUIS L'APP ────────────────────────────────────────────────
+
+app.post('/api/demandes/:id/approuver-app', authenticateToken, async (req, res) => {
+  const { id } = req.params;
+  console.log(`✅ [APP] Approbation demande ${id}`);
+
+  try {
+    const result = await pool.query(
+      `SELECT d.*, 
+              e.nom, e.prenom, e.adresse_mail, e.poste, e.matricule
+       FROM demande_rh d
+       JOIN employees e ON d.employe_id = e.id
+       WHERE d.id = $1`,
+      [id]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ success: false, error: 'Demande non trouvée' });
+    }
+
+    const demande = result.rows[0];
+
+    if (demande.statut !== 'en_attente') {
+      return res.status(400).json({
+        success: false,
+        error: `Cette demande a déjà été traitée (statut: ${demande.statut})`
+      });
+    }
+
+    await pool.query(
+      `UPDATE demande_rh 
+       SET statut = 'approuve', 
+           approuve_responsable1 = true,
+           updated_at = CURRENT_TIMESTAMP 
+       WHERE id = $1`,
+      [id]
+    );
+
+    const typeLabel =
+      demande.type_demande === 'conges' ? 'Congé' :
+      demande.type_demande === 'autorisation' ? 'Autorisation' : 'Mission';
+
+    const typeCongeLabel = getTypeCongeTextApp(demande.type_conge, demande.type_conge_autre);
+
+    // Email à l'employé
+    const htmlEmploye = `
+      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+        <h2 style="color: #16a34a; border-bottom: 3px solid #16a34a; padding-bottom: 10px;">
+          ✅ Votre demande a été approuvée
+        </h2>
+        <div style="background: #f0fdf4; padding: 20px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #16a34a;">
+          <p><strong>Bonjour ${demande.prenom} ${demande.nom},</strong></p>
+          <p>Nous avons le plaisir de vous informer que votre demande a été <strong style="color: #16a34a;">approuvée</strong>.</p>
+        </div>
+        <div style="background: #f8fafc; padding: 20px; border-radius: 8px; margin: 20px 0;">
+          <h3 style="color: #374151; margin-top: 0;">📋 Détails de la demande</h3>
+          <p><strong>Type :</strong> ${typeLabel}</p>
+          <p><strong>Motif :</strong> ${demande.titre}</p>
+          <p><strong>Date de départ :</strong> ${formatDateShortApp(demande.date_depart)}</p>
+          ${demande.date_retour ? `<p><strong>Date de retour :</strong> ${formatDateShortApp(demande.date_retour)}</p>` : ''}
+          ${typeCongeLabel ? `<p><strong>Type de congé :</strong> ${typeCongeLabel}</p>` : ''}
+          ${demande.heure_depart ? `<p><strong>Heure de départ :</strong> ${demande.heure_depart}</p>` : ''}
+          ${demande.heure_retour ? `<p><strong>Heure de retour :</strong> ${demande.heure_retour}</p>` : ''}
+          ${demande.frais_deplacement ? `<p><strong>Frais de déplacement :</strong> ${demande.frais_deplacement} TND</p>` : ''}
+        </div>
+        <p style="color: #6b7280; font-size: 14px;">Si vous avez des questions, contactez le service RH.</p>
+      </div>
+    `;
+
+    try {
+      await sendEmail(demande.adresse_mail, '✅ Votre demande RH a été approuvée', htmlEmploye);
+      console.log(`📧 Email approbation envoyé à ${demande.adresse_mail}`);
+    } catch (emailErr) {
+      console.error('❌ Erreur email employé (approbation):', emailErr.message);
+    }
+
+    // Email à Nesria
+    const htmlRH = `
+      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+        <h2 style="color: #1976d2; border-bottom: 3px solid #1976d2; padding-bottom: 10px;">
+          📋 Nouvelle demande RH approuvée
+        </h2>
+        <div style="background: #f8fafc; padding: 20px; border-radius: 8px; margin: 20px 0;">
+          <p><strong>Employé :</strong> ${demande.prenom} ${demande.nom}</p>
+          <p><strong>Matricule :</strong> ${demande.matricule || 'Non spécifié'}</p>
+          <p><strong>Poste :</strong> ${demande.poste || 'Non spécifié'}</p>
+          <p><strong>Type de demande :</strong> ${typeLabel}</p>
+          <p><strong>Motif :</strong> ${demande.titre}</p>
+          <p><strong>Date de départ :</strong> ${formatDateShortApp(demande.date_depart)}</p>
+          ${demande.date_retour ? `<p><strong>Date de retour :</strong> ${formatDateShortApp(demande.date_retour)}</p>` : ''}
+          ${typeCongeLabel ? `<p><strong>Type de congé :</strong> ${typeCongeLabel}</p>` : ''}
+        </div>
+        <p style="color: #6b7280; font-size: 14px;">Notification automatique du système RH.</p>
+      </div>
+    `;
+
+    try {
+      await sendEmail('nesria.ibrahim@avocarbon.com', `📋 Demande RH approuvée - ${demande.prenom} ${demande.nom}`, htmlRH);
+      console.log('📧 Email notification envoyé à Nesria');
+    } catch (emailErr) {
+      console.error('❌ Erreur email RH (approbation):', emailErr.message);
+    }
+
+    console.log(`✅ Demande ${id} approuvée depuis l'application`);
+    res.json({ success: true, message: 'Demande approuvée avec succès' });
+
+  } catch (err) {
+    console.error('❌ Erreur approbation app:', err);
+    res.status(500).json({ success: false, error: "Erreur lors de l'approbation", details: err.message });
+  }
+});
+
+// ─── REFUSER DEPUIS L'APP ──────────────────────────────────────────────────
+
+app.post('/api/demandes/:id/refuser-app', authenticateToken, async (req, res) => {
+  const { id } = req.params;
+  const { commentaire } = req.body;
+
+  console.log(`❌ [APP] Refus demande ${id}`);
+
+  if (!commentaire || !commentaire.trim()) {
+    return res.status(400).json({ success: false, error: 'Le motif du refus est obligatoire' });
+  }
+
+  try {
+    const result = await pool.query(
+      `SELECT d.*, 
+              e.nom, e.prenom, e.adresse_mail, e.poste, e.matricule
+       FROM demande_rh d
+       JOIN employees e ON d.employe_id = e.id
+       WHERE d.id = $1`,
+      [id]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ success: false, error: 'Demande non trouvée' });
+    }
+
+    const demande = result.rows[0];
+
+    if (demande.statut !== 'en_attente') {
+      return res.status(400).json({
+        success: false,
+        error: `Cette demande a déjà été traitée (statut: ${demande.statut})`
+      });
+    }
+
+    await pool.query(
+      `UPDATE demande_rh 
+       SET statut = 'refuse', 
+           approuve_responsable1 = false,
+           commentaire_refus = $1,
+           updated_at = CURRENT_TIMESTAMP 
+       WHERE id = $2`,
+      [commentaire.trim(), id]
+    );
+
+    const typeLabel =
+      demande.type_demande === 'conges' ? 'Congé' :
+      demande.type_demande === 'autorisation' ? 'Autorisation' : 'Mission';
+
+    const typeCongeLabel = getTypeCongeTextApp(demande.type_conge, demande.type_conge_autre);
+
+    // Email à l'employé
+    const htmlEmploye = `
+      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+        <h2 style="color: #dc2626; border-bottom: 3px solid #dc2626; padding-bottom: 10px;">
+          ❌ Votre demande a été refusée
+        </h2>
+        <div style="background: #fef2f2; padding: 20px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #dc2626;">
+          <p><strong>Bonjour ${demande.prenom} ${demande.nom},</strong></p>
+          <p>Nous vous informons que votre demande a été <strong style="color: #dc2626;">refusée</strong>.</p>
+        </div>
+        <div style="background: #f8fafc; padding: 20px; border-radius: 8px; margin: 20px 0;">
+          <h3 style="color: #374151; margin-top: 0;">📋 Détails de la demande</h3>
+          <p><strong>Type :</strong> ${typeLabel}</p>
+          <p><strong>Motif :</strong> ${demande.titre}</p>
+          <p><strong>Date de départ :</strong> ${formatDateShortApp(demande.date_depart)}</p>
+          ${demande.date_retour ? `<p><strong>Date de retour :</strong> ${formatDateShortApp(demande.date_retour)}</p>` : ''}
+          ${typeCongeLabel ? `<p><strong>Type de congé :</strong> ${typeCongeLabel}</p>` : ''}
+        </div>
+        <div style="background: #fef2f2; padding: 15px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #dc2626;">
+          <p style="margin: 0;"><strong>💬 Motif du refus :</strong></p>
+          <p style="margin: 8px 0 0 0; color: #374151;">${commentaire.trim()}</p>
+        </div>
+        <p style="color: #6b7280; font-size: 14px;">Pour toute question, contactez le service RH.</p>
+      </div>
+    `;
+
+    try {
+      await sendEmail(demande.adresse_mail, '❌ Votre demande RH a été refusée', htmlEmploye);
+      console.log(`📧 Email refus envoyé à ${demande.adresse_mail}`);
+    } catch (emailErr) {
+      console.error('❌ Erreur email employé (refus):', emailErr.message);
+    }
+
+    console.log(`✅ Demande ${id} refusée depuis l'application`);
+    res.json({ success: true, message: 'Demande refusée avec succès' });
+
+  } catch (err) {
+    console.error('❌ Erreur refus app:', err);
+    res.status(500).json({ success: false, error: 'Erreur lors du refus', details: err.message });
+  }
+});
 
 // =========================
 // Fallback & erreurs
