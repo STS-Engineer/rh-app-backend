@@ -444,33 +444,32 @@ async function checkContractEndAlerts() {
   try {
     console.log('🔔 Vérification des alertes de fin de contrat...');
     
-    // Calculer la date dans 1 mois
-    const now = new Date();
-    const oneMonthLater = new Date(now);
-    oneMonthLater.setMonth(oneMonthLater.getMonth() + 1);
-    const oneMonthLaterStr = oneMonthLater.toISOString().split('T')[0];
-    
-    // Trouver les employés dont la date de fin de contrat est dans 1 mois
     const result = await pool.query(
       `SELECT id, matricule, nom, prenom, date_fin_contrat, poste 
        FROM employees 
-       WHERE date_fin_contrat = $1 
-         AND statut = 'actif' 
-         AND (last_contract_alert IS NULL OR last_contract_alert < CURRENT_DATE - INTERVAL '7 days')`,
-      [oneMonthLaterStr]
+       WHERE statut = 'actif'
+         AND date_fin_contrat IS NOT NULL
+         -- Your logic: contract_end_date - 30 days = today
+         AND (date_fin_contrat - INTERVAL '30 days')::date = CURRENT_DATE
+         -- Never alerted OR not alerted this month yet
+         AND (
+           last_contract_alert IS NULL
+           OR DATE_TRUNC('month', last_contract_alert) < DATE_TRUNC('month', CURRENT_DATE)
+         )`
     );
     
-    console.log(`📊 ${result.rows.length} employé(s) avec fin de contrat dans 1 mois`);
+    console.log(`📊 ${result.rows.length} employé(s) à alerter aujourd'hui`);
     
-    // Envoyer des alertes pour chaque employé
     for (const employee of result.rows) {
       await sendContractEndAlert(employee);
       
-      // Mettre à jour la date de dernière alerte
       await pool.query(
         'UPDATE employees SET last_contract_alert = CURRENT_TIMESTAMP WHERE id = $1',
         [employee.id]
       );
+      
+      console.log(`✅ Alerte envoyée pour ${employee.prenom} ${employee.nom} 
+        (Fin contrat: ${employee.date_fin_contrat})`);
     }
     
     return result.rows;
