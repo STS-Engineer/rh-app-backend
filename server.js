@@ -4474,6 +4474,193 @@ function getTypeCongeTextApp(type_conge, type_conge_autre) {
   return type_conge;
 }
 
+// ==================== FONCTION DE GÉNÉRATION PDF POUR L'ÉQUIPE RH ====================
+async function genererPDFDemandeApprouvee(demande, joursOuvres = 0) {
+  return new Promise((resolve, reject) => {
+    try {
+      const doc = new PDFKitDocument({
+        size: 'A4',
+        margins: { top: 50, bottom: 50, left: 50, right: 50 }
+      });
+
+      const chunks = [];
+      doc.on('data', chunk => chunks.push(chunk));
+      doc.on('end', () => resolve(Buffer.concat(chunks)));
+      doc.on('error', reject);
+
+      // En-tête
+      doc.rect(0, 0, doc.page.width, 80).fill('#1976d2');
+      doc.fillColor('#ffffff')
+        .fontSize(24)
+        .font('Helvetica-Bold')
+        .text('Demande RH Approuvée', 50, 30, { align: 'center' });
+      doc.fillColor('#000000');
+
+      // Bannière d'information
+      doc.rect(50, 100, doc.page.width - 100, 60)
+        .fillAndStroke('#e3f2fd', '#1976d2');
+      doc.fillColor('#1565c0')
+        .fontSize(12)
+        .font('Helvetica-Bold')
+        .text('Une demande RH vient d\'être approuvée', 60, 115)
+        .font('Helvetica')
+        .text('Cette demande nécessite votre attention pour le suivi administratif.', 60, 135);
+
+      let yPosition = 180;
+
+      // Informations Employé
+      doc.fontSize(16)
+        .font('Helvetica-Bold')
+        .fillColor('#1976d2')
+        .text('Informations Employé', 50, yPosition);
+
+      yPosition += 25;
+      doc.moveTo(50, yPosition).lineTo(doc.page.width - 50, yPosition).stroke('#e0e0e0');
+      yPosition += 15;
+
+      const employeInfo = [
+        { label: 'Nom complet:', value: `${demande.nom} ${demande.prenom}` },
+        { label: 'Matricule:', value: demande.matricule || 'Non spécifié' },
+        { label: 'Poste:', value: demande.poste || 'Non spécifié' },
+        { label: 'Email:', value: demande.adresse_mail }
+      ];
+
+      employeInfo.forEach(info => {
+        doc.fontSize(11)
+          .font('Helvetica-Bold')
+          .text(info.label, 60, yPosition, { width: 150, continued: true })
+          .font('Helvetica')
+          .text(info.value, { width: 350 });
+        yPosition += 20;
+      });
+
+      yPosition += 15;
+
+      // Détails de la Demande
+      doc.fontSize(16)
+        .font('Helvetica-Bold')
+        .fillColor('#1976d2')
+        .text('Détails de la Demande', 50, yPosition);
+
+      yPosition += 25;
+      doc.moveTo(50, yPosition).lineTo(doc.page.width - 50, yPosition).stroke('#e0e0e0');
+      yPosition += 15;
+
+      const typeDemandeLabel = demande.type_demande === 'conges' ? 'Congé' :
+        demande.type_demande === 'autorisation' ? 'Autorisation' : 'Mission';
+
+      const typeCongeLabel = demande.type_demande === 'conges'
+        ? (demande.type_conge === 'annuel' ? 'Congé annuel' :
+           demande.type_conge === 'sans_solde' ? 'Congé sans solde' :
+           demande.type_conge === 'autre' ? `Autre (${demande.type_conge_autre || ''})` : 'Non spécifié')
+        : null;
+
+      const demandeInfo = [
+        { label: 'Type de demande:', value: typeDemandeLabel },
+        { label: 'Motif:', value: demande.titre },
+        { label: 'Date de départ:', value: new Date(demande.date_depart).toLocaleDateString('fr-FR') }
+      ];
+
+      if (demande.date_retour) {
+        demandeInfo.push({ label: 'Date de retour:', value: new Date(demande.date_retour).toLocaleDateString('fr-FR') });
+      }
+
+      if (demande.type_demande === 'conges' && joursOuvres > 0) {
+        demandeInfo.push({
+          label: 'Nombre de jours ouvrés:',
+          value: `${joursOuvres} jour${joursOuvres > 1 ? 's' : ''}`,
+          highlight: true
+        });
+      }
+
+      if (typeCongeLabel) {
+        demandeInfo.push({ label: 'Type de congé:', value: typeCongeLabel });
+      }
+
+      if (demande.demi_journee) {
+        demandeInfo.push({ label: 'Demi-journée:', value: 'Oui' });
+      }
+
+      if (demande.heure_depart) {
+        demandeInfo.push({ label: 'Heure de départ:', value: demande.heure_depart });
+      }
+
+      if (demande.heure_retour) {
+        demandeInfo.push({ label: 'Heure de retour:', value: demande.heure_retour });
+      }
+
+      if (demande.frais_deplacement) {
+        demandeInfo.push({ label: 'Frais de déplacement:', value: `${demande.frais_deplacement} TND` });
+      }
+
+      demandeInfo.forEach(info => {
+        doc.fontSize(11)
+          .font('Helvetica-Bold')
+          .text(info.label, 60, yPosition, { width: 150, continued: true });
+
+        if (info.highlight) {
+          doc.fillColor('#1976d2')
+            .fontSize(14)
+            .font('Helvetica-Bold')
+            .text(info.value, { width: 350 });
+          doc.fillColor('#000000');
+        } else {
+          doc.font('Helvetica')
+            .text(info.value, { width: 350 });
+        }
+
+        yPosition += 25;
+      });
+
+      // Pied de page
+      const footerY = doc.page.height - 60;
+      doc.rect(0, footerY, doc.page.width, 60).fill('#f5f5f5');
+      doc.fillColor('#666666')
+        .fontSize(9)
+        .font('Helvetica')
+        .text('Cet email est envoyé automatiquement par le système de gestion RH', 50, footerY + 20, {
+          align: 'center',
+          width: doc.page.width - 100
+        })
+        .text(`Généré le ${new Date().toLocaleDateString('fr-FR')}`, 50, footerY + 35, {
+          align: 'center',
+          width: doc.page.width - 100
+        });
+
+      doc.end();
+
+    } catch (error) {
+      reject(error);
+    }
+  });
+}
+
+// Fonction pour calculer les jours ouvrés
+function calculerJoursOuvres(dateDebut, dateFin) {
+  if (!dateDebut || !dateFin) return 0;
+
+  const debut = new Date(dateDebut);
+  const fin = new Date(dateFin);
+
+  debut.setHours(0, 0, 0, 0);
+  fin.setHours(0, 0, 0, 0);
+
+  if (fin < debut) return 0;
+
+  let joursOuvres = 0;
+  const dateActuelle = new Date(debut);
+
+  while (dateActuelle <= fin) {
+    const jourSemaine = dateActuelle.getDay();
+    if (jourSemaine >= 1 && jourSemaine <= 5) {
+      joursOuvres++;
+    }
+    dateActuelle.setDate(dateActuelle.getDate() + 1);
+  }
+
+  return joursOuvres;
+}
+
 // ─── APPROUVER DEPUIS L'APP ────────────────────────────────────────────────
 
 app.post('/api/demandes/:id/approuver-app', authenticateToken, async (req, res) => {
@@ -4550,31 +4737,82 @@ app.post('/api/demandes/:id/approuver-app', authenticateToken, async (req, res) 
       console.error('❌ Erreur email employé (approbation):', emailErr.message);
     }
 
-    // Email à Nesria
-    const htmlRH = `
-      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-        <h2 style="color: #1976d2; border-bottom: 3px solid #1976d2; padding-bottom: 10px;">
-          📋 Nouvelle demande RH approuvée
-        </h2>
-        <div style="background: #f8fafc; padding: 20px; border-radius: 8px; margin: 20px 0;">
-          <p><strong>Employé :</strong> ${demande.prenom} ${demande.nom}</p>
-          <p><strong>Matricule :</strong> ${demande.matricule || 'Non spécifié'}</p>
-          <p><strong>Poste :</strong> ${demande.poste || 'Non spécifié'}</p>
-          <p><strong>Type de demande :</strong> ${typeLabel}</p>
-          <p><strong>Motif :</strong> ${demande.titre}</p>
-          <p><strong>Date de départ :</strong> ${formatDateShortApp(demande.date_depart)}</p>
-          ${demande.date_retour ? `<p><strong>Date de retour :</strong> ${formatDateShortApp(demande.date_retour)}</p>` : ''}
-          ${typeCongeLabel ? `<p><strong>Type de congé :</strong> ${typeCongeLabel}</p>` : ''}
-        </div>
-        <p style="color: #6b7280; font-size: 14px;">Notification automatique du système RH.</p>
-      </div>
-    `;
+    // Calcul du nombre de jours ouvrés pour les congés
+    let joursOuvres = 0;
+    if (demande.type_demande === 'conges' && demande.date_retour) {
+      joursOuvres = calculerJoursOuvres(demande.date_depart, demande.date_retour);
+    }
 
+    // EMAIL À NESRIA - Avec PDF en pièce jointe
     try {
-      await sendEmail('nesria.ibrahim@avocarbon.com', `📋 Demande RH approuvée - ${demande.prenom} ${demande.nom}`, htmlRH);
-      console.log('📧 Email notification envoyé à Nesria');
-    } catch (emailErr) {
-      console.error('❌ Erreur email RH (approbation):', emailErr.message);
+      const pdfBuffer = await genererPDFDemandeApprouvee(demande, joursOuvres);
+      const pdfFileName = `Demande_RH_${demande.nom}_${demande.prenom}_${Date.now()}.pdf`;
+
+      const mailOptions = {
+        from: {
+          name: EMAIL_FROM_NAME,
+          address: EMAIL_FROM
+        },
+        to: 'nesria.ibrahim@avocarbon.com',
+        subject: `📋 Demande RH approuvée - ${demande.prenom} ${demande.nom}`,
+        html: `
+          <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+            <h2 style="color: #1976d2; border-bottom: 3px solid #1976d2; padding-bottom: 10px;">
+              📋 Nouvelle demande RH approuvée
+            </h2>
+            <div style="background: #e3f2fd; padding: 20px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #1976d2;">
+              <p style="margin: 0; color: #1565c0; font-weight: 500;">
+                ℹ️ Une demande RH vient d'être approuvée et nécessite votre attention.
+              </p>
+            </div>
+            <div style="background: #f8fafc; padding: 20px; border-radius: 8px; margin: 20px 0;">
+              <p><strong>Employé:</strong> ${demande.prenom} ${demande.nom}</p>
+              <p><strong>Matricule:</strong> ${demande.matricule || 'Non spécifié'}</p>
+              <p><strong>Type de demande:</strong> ${typeLabel}</p>
+              <p><strong>Date de départ:</strong> ${formatDateShortApp(demande.date_depart)}</p>
+              ${joursOuvres > 0 ? `<p><strong>Nombre de jours ouvrés:</strong> <span style="color: #1976d2; font-size: 18px; font-weight: bold;">${joursOuvres} jour${joursOuvres > 1 ? 's' : ''}</span></p>` : ''}
+            </div>
+            <p style="color: #6b7280; font-size: 14px;">
+              📎 Veuillez consulter le fichier PDF joint pour tous les détails.
+            </p>
+          </div>
+        `,
+        attachments: [
+          {
+            filename: pdfFileName,
+            content: pdfBuffer,
+            contentType: 'application/pdf'
+          }
+        ]
+      };
+
+      await emailTransporter.sendMail(mailOptions);
+      console.log(`📧 PDF envoyé à Nesria: ${pdfFileName} (${pdfBuffer.length} octets)`);
+
+    } catch (pdfError) {
+      console.error('❌ Erreur génération/envoi PDF:', pdfError);
+      // Fallback : envoyer un email sans PDF en cas d'erreur
+      try {
+        const htmlRH = `
+          <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+            <h2 style="color: #1976d2; border-bottom: 3px solid #1976d2; padding-bottom: 10px;">
+              📋 Demande RH approuvée
+            </h2>
+            <div style="background: #f8fafc; padding: 20px; border-radius: 8px; margin: 20px 0;">
+              <p><strong>Employé:</strong> ${demande.prenom} ${demande.nom}</p>
+              <p><strong>Matricule:</strong> ${demande.matricule || 'Non spécifié'}</p>
+              <p><strong>Type de demande:</strong> ${typeLabel}</p>
+              <p><strong>Date de départ:</strong> ${formatDateShortApp(demande.date_depart)}</p>
+            </div>
+            <p style="color: #6b7280; font-size: 14px;">Notification automatique du système RH.</p>
+          </div>
+        `;
+        await sendEmail('nesria.ibrahim@avocarbon.com', 
+          `📋 Demande RH approuvée - ${demande.prenom} ${demande.nom}`, 
+          htmlRH);
+      } catch (fallbackError) {
+        console.error('❌ Erreur même en fallback:', fallbackError);
+      }
     }
 
     console.log(`✅ Demande ${id} approuvée depuis l'application`);
