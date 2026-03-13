@@ -4229,6 +4229,93 @@ app.patch("/api/visa-dossiers/:id/status", authenticateToken, async (req, res) =
     res.status(500).json({ message: err.message });
   }
 });
+// DELETE dossier VISA (abandonner)
+app.delete("/api/visa-dossiers/:id", authenticateToken, async (req, res) => {
+  const dossierId = Number(req.params.id);
+  const client = await pool.connect();
+  
+  try {
+    await client.query("BEGIN");
+    
+    // Check if dossier exists and get info for logging
+    const checkResult = await client.query(
+      `SELECT d.id, d.statut, e.nom, e.prenom 
+       FROM visa_dossiers d
+       JOIN employees e ON e.id = d.employee_id
+       WHERE d.id = $1`,
+      [dossierId]
+    );
+    
+    if (checkResult.rows.length === 0) {
+      await client.query("ROLLBACK");
+      return res.status(404).json({ 
+        success: false, 
+        message: "Dossier VISA non trouvé" 
+      });
+    }
+    
+    const dossier = checkResult.rows[0];
+    
+    // Optional: Restrict deletion to only EN_COURS status
+    if (dossier.statut !== 'EN_COURS') {
+      await client.query("ROLLBACK");
+      return res.status(400).json({ 
+        success: false, 
+        message: "Seuls les dossiers en cours (EN_COURS) peuvent être supprimés" 
+      });
+    }
+    
+    // Get all documents to clean up PDF files
+    const docsResult = await client.query(
+      `SELECT file_url FROM visa_documents WHERE dossier_id = $1`,
+      [dossierId]
+    );
+    
+    // Delete related documents from database
+    await client.query("DELETE FROM visa_documents WHERE dossier_id = $1", [dossierId]);
+    
+    // Delete the dossier
+    await client.query("DELETE FROM visa_dossiers WHERE id = $1", [dossierId]);
+    
+    await client.query("COMMIT");
+    
+    // Clean up PDF files from filesystem (optional, after successful DB deletion)
+    for (const doc of docsResult.rows) {
+      if (doc.file_url) {
+        try {
+          // Extract filename from URL
+          const urlParts = doc.file_url.split('/');
+          const filename = urlParts[urlParts.length - 1];
+          const filePath = path.join(visaPdfDir, filename);
+          
+          if (fs.existsSync(filePath)) {
+            fs.unlinkSync(filePath);
+            console.log(`🗑️ Fichier PDF supprimé: ${filename}`);
+          }
+        } catch (fileError) {
+          console.warn(`⚠️ Impossible de supprimer le fichier PDF: ${fileError.message}`);
+        }
+      }
+    }
+    
+    console.log(`✅ Dossier VISA ${dossierId} supprimé (${dossier.prenom} ${dossier.nom})`);
+    
+    res.json({ 
+      success: true, 
+      message: "Dossier VISA supprimé avec succès" 
+    });
+    
+  } catch (err) {
+    await client.query("ROLLBACK");
+    console.error("❌ Erreur suppression dossier VISA:", err);
+    res.status(500).json({ 
+      success: false, 
+      message: err.message || "Erreur lors de la suppression du dossier" 
+    });
+  } finally {
+    client.release();
+  }
+});
 
 // ==================================================
 // ✅ ROUTES GÉNÉRATION (DOCX) — sans LibreOffice
