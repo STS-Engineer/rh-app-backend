@@ -4540,6 +4540,183 @@ app.get("/api/visa-dossiers/:id/dossier-pdf", async (req, res) => {
     });
   }
 });
+
+// =============================================================
+// CHANGER STATUT : Approuvé → Refusé (manager changed mind)
+// =============================================================
+app.post('/api/demandes/:id/changer-statut-refuse', authenticateToken, async (req, res) => {
+  const { id } = req.params;
+  const { commentaire } = req.body;
+
+  console.log(`🔄 [APP] Changement statut → refusé, demande ${id}`);
+
+  if (!commentaire || !commentaire.trim()) {
+    return res.status(400).json({ success: false, error: 'Le motif du refus est obligatoire' });
+  }
+
+  try {
+    const result = await pool.query(
+      `SELECT d.*, e.nom, e.prenom, e.adresse_mail, e.poste, e.matricule
+       FROM demande_rh d
+       JOIN employees e ON d.employe_id = e.id
+       WHERE d.id = $1`,
+      [id]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ success: false, error: 'Demande non trouvée' });
+    }
+
+    const demande = result.rows[0];
+
+    if (demande.statut !== 'approuve') {
+      return res.status(400).json({
+        success: false,
+        error: `Cette demande n'est pas dans le statut approuvé (statut actuel: ${demande.statut})`
+      });
+    }
+
+    await pool.query(
+      `UPDATE demande_rh 
+       SET statut = 'refuse',
+           approuve_responsable1 = false,
+           approuve_responsable2 = false,
+           commentaire_refus = $1,
+           updated_at = CURRENT_TIMESTAMP
+       WHERE id = $2`,
+      [commentaire.trim(), id]
+    );
+
+    const typeLabel =
+      demande.type_demande === 'conges' ? 'Congé' :
+      demande.type_demande === 'autorisation' ? 'Autorisation' : 'Mission';
+
+    // Email à l'employé
+    try {
+      await sendEmail(
+        demande.adresse_mail,
+        '🔄 Mise à jour de votre demande RH',
+        `
+        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+          <h2 style="color: #dc2626; border-bottom: 3px solid #dc2626; padding-bottom: 10px;">
+            🔄 Statut de votre demande modifié
+          </h2>
+          <div style="background: #fef2f2; padding: 20px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #dc2626;">
+            <p><strong>Bonjour ${demande.prenom} ${demande.nom},</strong></p>
+            <p>Le statut de votre demande a été modifié de <strong>Approuvé</strong> à <strong style="color:#dc2626;">Refusé</strong>.</p>
+          </div>
+          <div style="background: #f8fafc; padding: 20px; border-radius: 8px; margin: 20px 0;">
+            <p><strong>Type :</strong> ${typeLabel}</p>
+            <p><strong>Motif :</strong> ${demande.titre}</p>
+            <p><strong>Date de départ :</strong> ${formatDateShortApp(demande.date_depart)}</p>
+          </div>
+          <div style="background: #fef2f2; padding: 15px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #dc2626;">
+            <p style="margin: 0;"><strong>💬 Motif du refus :</strong></p>
+            <p style="margin: 8px 0 0 0; color: #374151;">${commentaire.trim()}</p>
+          </div>
+          <p style="color: #6b7280; font-size: 14px;">Pour toute question, contactez le service RH.</p>
+        </div>
+        `
+      );
+      console.log(`📧 Email changement → refusé envoyé à ${demande.adresse_mail}`);
+    } catch (emailErr) {
+      console.error('❌ Erreur email changement statut → refusé:', emailErr.message);
+    }
+
+    console.log(`✅ Demande ${id} changée en refusé depuis l'application`);
+    res.json({ success: true, message: 'Statut changé en refusé avec succès' });
+
+  } catch (err) {
+    console.error('❌ Erreur changement statut → refusé:', err);
+    res.status(500).json({ success: false, error: 'Erreur lors du changement de statut', details: err.message });
+  }
+});
+
+// =============================================================
+// CHANGER STATUT : Refusé → Approuvé (manager changed mind)
+// =============================================================
+app.post('/api/demandes/:id/changer-statut-approuve', authenticateToken, async (req, res) => {
+  const { id } = req.params;
+
+  console.log(`🔄 [APP] Changement statut → approuvé, demande ${id}`);
+
+  try {
+    const result = await pool.query(
+      `SELECT d.*, e.nom, e.prenom, e.adresse_mail, e.poste, e.matricule
+       FROM demande_rh d
+       JOIN employees e ON d.employe_id = e.id
+       WHERE d.id = $1`,
+      [id]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ success: false, error: 'Demande non trouvée' });
+    }
+
+    const demande = result.rows[0];
+
+    if (demande.statut !== 'refuse') {
+      return res.status(400).json({
+        success: false,
+        error: `Cette demande n'est pas dans le statut refusé (statut actuel: ${demande.statut})`
+      });
+    }
+
+    await pool.query(
+      `UPDATE demande_rh 
+       SET statut = 'approuve',
+           approuve_responsable1 = true,
+           approuve_responsable2 = true,
+           commentaire_refus = NULL,
+           updated_at = CURRENT_TIMESTAMP
+       WHERE id = $1`,
+      [id]
+    );
+
+    const typeLabel =
+      demande.type_demande === 'conges' ? 'Congé' :
+      demande.type_demande === 'autorisation' ? 'Autorisation' : 'Mission';
+
+    // Email à l'employé
+    try {
+      await sendEmail(
+        demande.adresse_mail,
+        '🔄 Mise à jour de votre demande RH',
+        `
+        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+          <h2 style="color: #16a34a; border-bottom: 3px solid #16a34a; padding-bottom: 10px;">
+            🔄 Statut de votre demande modifié
+          </h2>
+          <div style="background: #f0fdf4; padding: 20px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #16a34a;">
+            <p><strong>Bonjour ${demande.prenom} ${demande.nom},</strong></p>
+            <p>Le statut de votre demande a été modifié de <strong>Refusé</strong> à <strong style="color:#16a34a;">Approuvé</strong>.</p>
+          </div>
+          <div style="background: #f8fafc; padding: 20px; border-radius: 8px; margin: 20px 0;">
+            <p><strong>Type :</strong> ${typeLabel}</p>
+            <p><strong>Motif :</strong> ${demande.titre}</p>
+            <p><strong>Date de départ :</strong> ${formatDateShortApp(demande.date_depart)}</p>
+            ${demande.date_retour ? `<p><strong>Date de retour :</strong> ${formatDateShortApp(demande.date_retour)}</p>` : ''}
+          </div>
+          <p style="color: #6b7280; font-size: 14px;">Bonne continuation !</p>
+        </div>
+        `
+      );
+      console.log(`📧 Email changement → approuvé envoyé à ${demande.adresse_mail}`);
+    } catch (emailErr) {
+      console.error('❌ Erreur email changement statut → approuvé:', emailErr.message);
+    }
+
+    console.log(`✅ Demande ${id} changée en approuvé depuis l'application`);
+    res.json({ success: true, message: 'Statut changé en approuvé avec succès' });
+
+  } catch (err) {
+    console.error('❌ Erreur changement statut → approuvé:', err);
+    res.status(500).json({ success: false, error: 'Erreur lors du changement de statut', details: err.message });
+  }
+});
+
+
+
 // =============================================================
 // ✅ NOUVELLES ROUTES : APPROUVER / REFUSER DEPUIS L'APPLICATION
 // Coller dans server.js JUSTE AVANT le bloc "Fallback & erreurs"
