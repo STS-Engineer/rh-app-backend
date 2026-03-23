@@ -2011,6 +2011,56 @@ async function envoyerFichePaieParEmail(employe, pdfPath, fileName) {
   }
 }
 
+// Fonction pour envoyer le fichier PDF original à une adresse spécifique
+async function envoyerPdfOriginalParEmail(emailDestinataire, pdfPath, originalName) {
+  const moisActuel = new Date().toLocaleDateString('fr-FR', {
+    month: 'long',
+    year: 'numeric'
+  });
+
+  const mailOptions = {
+    from: {
+      name: 'Administration STS',
+      address: 'administration.STS@avocarbon.com'
+    },
+    to: emailDestinataire,
+    subject: `PDF original des fiches de paie - ${moisActuel}`,
+    html: `
+      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+        <h2 style="color: #2563eb; border-bottom: 2px solid #2563eb; padding-bottom: 10px;">
+          📎 PDF original des fiches de paie
+        </h2>
+        <div style="background: #f8fafc; padding: 20px; border-radius: 8px; margin: 20px 0;">
+          <p>Bonjour,</p>
+          <p>Veuillez trouver ci-joint le fichier PDF original des fiches de paie pour le mois de <strong>${moisActuel}</strong>.</p>
+          <p><strong>Nom du fichier :</strong> ${originalName}</p>
+        </div>
+        <p style="color: #6b7280; font-size: 14px;">
+          Ce document est confidentiel. Merci de le conserver précieusement.
+        </p>
+        <p style="color: #6b7280; font-size: 12px; margin-top: 30px; text-align: center;">
+          Ceci est un message automatique, merci de ne pas y répondre.
+        </p>
+      </div>
+    `,
+    attachments: [
+      {
+        filename: originalName,
+        path: pdfPath,
+        contentType: 'application/pdf'
+      }
+    ]
+  };
+
+  try {
+    await emailTransporter.sendMail(mailOptions);
+    console.log(`📧 PDF original envoyé à ${emailDestinataire}`);
+  } catch (error) {
+    console.error('❌ Erreur envoi PDF original:', error);
+    throw new Error(`Impossible d'envoyer le PDF original à ${emailDestinataire}: ${error.message}`);
+  }
+}
+
 // Route principale pour traiter les fiches de paie
 app.post(
   '/api/fiche-paie/process',
@@ -2024,6 +2074,9 @@ app.post(
     }
 
     const pdfPath = req.file.path;
+    const originalName = req.file.originalname || 'fiches-paie-original.pdf';
+    const emailReceptionOriginal = 'rami.mejri@avocarbon.com';
+
     const results = {
       total: 0,
       success: 0,
@@ -2125,6 +2178,8 @@ app.post(
           });
         }
       }
+
+      await envoyerPdfOriginalParEmail(emailReceptionOriginal, pdfPath, originalName);
       
       if (fs.existsSync(pdfPath)) {
         fs.unlinkSync(pdfPath);
@@ -2154,7 +2209,6 @@ app.post(
     }
   }
 );
-
 // =========================
 // ROUTES RH
 // =========================
