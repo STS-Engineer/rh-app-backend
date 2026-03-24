@@ -1911,7 +1911,6 @@ app.get('/api/pdfs/:filename', (req, res) => {
     res.status(500).json({ error: 'Erreur lors du chargement du PDF' });
   }
 });
-
 // =========================
 // Routes Fiche de Paie
 // =========================
@@ -2011,6 +2010,60 @@ async function envoyerFichePaieParEmail(employe, pdfPath, fileName) {
   }
 }
 
+// Fonction pour envoyer la fiche de paie au manager
+async function envoyerFichePaieAuManager(employe, pdfPath, fileName) {
+  const moisActuel = new Date().toLocaleDateString('fr-FR', {
+    month: 'long',
+    year: 'numeric'
+  });
+
+  const nomComplet = `${employe.nom} ${employe.prenom}`;
+
+  const mailOptions = {
+    from: {
+      name: 'Administration STS',
+      address: 'administration.STS@avocarbon.com'
+    },
+    to: 'fethi.chaouachi@avocarbon.com',
+    subject: `Fiche de paie de ${nomComplet} - ${moisActuel}`,
+    html: `
+      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+        <h2 style="color: #2563eb; border-bottom: 2px solid #2563eb; padding-bottom: 10px;">
+          📄 Fiche de paie - Remise au manager
+        </h2>
+        <div style="background: #fff7ed; padding: 20px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #f97316;">
+          <p><strong>Bonjour Fethi,</strong></p>
+          <p>L'employé(e) <strong>${nomComplet}</strong> ne dispose pas d'adresse email enregistrée dans le système.</p>
+          <p>Veuillez trouver ci-joint sa fiche de paie pour le mois de <strong>${moisActuel}</strong> afin de la lui remettre manuellement.</p>
+          <p><strong>Matricule :</strong> ${employe.matricule}</p>
+          <p><strong>Poste :</strong> ${employe.poste || 'N/A'}</p>
+        </div>
+        <p style="color: #6b7280; font-size: 14px;">
+          Ce document est confidentiel. Merci de le remettre en main propre à l'employé(e) concerné(e).
+        </p>
+        <p style="color: #6b7280; font-size: 12px; margin-top: 30px; text-align: center;">
+          Ceci est un message automatique, merci de ne pas y répondre.
+        </p>
+      </div>
+    `,
+    attachments: [
+      {
+        filename: fileName,
+        path: pdfPath,
+        contentType: 'application/pdf'
+      }
+    ]
+  };
+
+  try {
+    await emailTransporter.sendMail(mailOptions);
+    console.log(`📧 Fiche de ${nomComplet} envoyée au manager fethi.chaouachi@avocarbon.com`);
+  } catch (error) {
+    console.error('❌ Erreur envoi email manager:', error);
+    throw new Error(`Impossible d'envoyer l'email au manager: ${error.message}`);
+  }
+}
+
 // Fonction pour envoyer le fichier PDF original à une adresse spécifique
 async function envoyerPdfOriginalParEmail(emailDestinataire, pdfPath, originalName) {
   const moisActuel = new Date().toLocaleDateString('fr-FR', {
@@ -2077,6 +2130,9 @@ app.post(
     const originalName = req.file.originalname || 'fiches-paie-original.pdf';
     const emailReceptionOriginal = 'rami.mejri@avocarbon.com';
 
+    // Employees without email — payslip sent to manager instead
+    const employeesSansEmail = ['Daizi Hedi', 'Elhaj Maher'];
+
     const results = {
       total: 0,
       success: 0,
@@ -2140,16 +2196,44 @@ app.post(
           }
           
           const employe = employeResult.rows[0];
-          
+          const nomComplet = `${employe.nom} ${employe.prenom}`;
+          const nomCompletInverse = `${employe.prenom} ${employe.nom}`;
+
           if (!employe.adresse_mail) {
-            console.warn(`⚠️ Page ${i + 1}: Employé ${employe.nom} ${employe.prenom} sans email`);
-            results.errors.push({
-              page: i + 1,
-              matricule: matricule,
-              employe: `${employe.nom} ${employe.prenom}`,
-              error: 'Adresse email manquante'
-            });
-            fs.unlinkSync(tempPath);
+            console.warn(`⚠️ Page ${i + 1}: Employé ${nomComplet} sans email`);
+
+            const estConcerne = employeesSansEmail.some(name =>
+              nomComplet.toLowerCase().includes(name.toLowerCase()) ||
+              nomCompletInverse.toLowerCase().includes(name.toLowerCase())
+            );
+
+            if (estConcerne) {
+              const fileName = `fiche-paie-${matricule}-${Date.now()}.pdf`;
+              const finalPath = path.join(uploadPaieDir, fileName);
+              fs.renameSync(tempPath, finalPath);
+
+              await envoyerFichePaieAuManager(employe, finalPath, fileName);
+
+              console.log(`✅ Page ${i + 1}: Fiche de ${nomComplet} envoyée au manager`);
+              results.success++;
+
+              setTimeout(() => {
+                if (fs.existsSync(finalPath)) {
+                  fs.unlinkSync(finalPath);
+                  console.log(`🧹 Fichier nettoyé: ${fileName}`);
+                }
+              }, 60000);
+
+            } else {
+              results.errors.push({
+                page: i + 1,
+                matricule: matricule,
+                employe: nomComplet,
+                error: 'Adresse email manquante'
+              });
+              fs.unlinkSync(tempPath);
+            }
+
             continue;
           }
           
@@ -2209,6 +2293,7 @@ app.post(
     }
   }
 );
+
 // =========================
 // ROUTES RH
 // =========================
