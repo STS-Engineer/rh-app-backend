@@ -5065,7 +5065,7 @@ function calculerJoursOuvres(dateDebut, dateFin) {
 }
 
 // ─── APPROUVER DEPUIS L'APP ────────────────────────────────────────────────
-
+// ─── APPROUVER DEPUIS L'APP ────────────────────────────────────────────────
 app.post('/api/demandes/:id/approuver-app', authenticateToken, async (req, res) => {
   const { id } = req.params;
   console.log(`✅ [APP] Approbation demande ${id}`);
@@ -5073,7 +5073,8 @@ app.post('/api/demandes/:id/approuver-app', authenticateToken, async (req, res) 
   try {
     const result = await pool.query(
       `SELECT d.*, 
-              e.nom, e.prenom, e.adresse_mail, e.poste, e.matricule
+              e.nom, e.prenom, e.adresse_mail, e.poste, e.matricule,
+              e.mail_responsable2
        FROM demande_rh d
        JOIN employees e ON d.employe_id = e.id
        WHERE d.id = $1`,
@@ -5093,13 +5094,17 @@ app.post('/api/demandes/:id/approuver-app', authenticateToken, async (req, res) 
       });
     }
 
+    // ✅ FIX: if resp2 exists, stay en_attente until manager acts
+    const hasResp2 = !!demande.mail_responsable2;
+    const newStatut = hasResp2 ? 'en_attente' : 'approuve';
+
     await pool.query(
       `UPDATE demande_rh 
-       SET statut = 'approuve', 
+       SET statut = $1, 
            approuve_responsable1 = true,
            updated_at = CURRENT_TIMESTAMP 
-       WHERE id = $1`,
-      [id]
+       WHERE id = $2`,
+      [newStatut, id]
     );
 
     const typeLabel =
@@ -5107,6 +5112,8 @@ app.post('/api/demandes/:id/approuver-app', authenticateToken, async (req, res) 
       demande.type_demande === 'autorisation' ? 'Autorisation' : 'Mission';
 
     const typeCongeLabel = getTypeCongeTextApp(demande.type_conge, demande.type_conge_autre);
+
+    // ... rest of your code continues unchanged
 
     // Email à l'employé
     const htmlEmploye = `
