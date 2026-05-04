@@ -344,6 +344,9 @@ const authenticateToken = (req, res, next) => {
   });
 };
 
+const createTenantApi = require('./routes/tenant-api.cjs');
+app.use('/api/v2', createTenantApi({ pool, authenticateToken }));
+
 // =========================
 // Utilitaires
 // =========================
@@ -2426,7 +2429,11 @@ app.post('/api/auth/login', async (req, res) => {
         const token = jwt.sign(
           {
             userId: user.id,
-            email: user.email
+            email: user.email,
+            role: user.role || 'user',
+            tenant_id: user.tenant_id || null,
+            plant: user.plant || null,
+            name: user.name || null
           },
           JWT_SECRET,
           { expiresIn: '24h' }
@@ -2437,7 +2444,11 @@ app.post('/api/auth/login', async (req, res) => {
           token: token,
           user: {
             id: user.id,
-            email: user.email
+            email: user.email,
+            role: user.role || 'user',
+            tenant_id: user.tenant_id || null,
+            plant: user.plant || null,
+            name: user.name || null
           }
         });
       } else {
