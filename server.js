@@ -346,6 +346,7 @@ const authenticateToken = (req, res, next) => {
 
 const createTenantApi = require('./routes/tenant-api.cjs');
 app.use('/api/v2', createTenantApi({ pool, authenticateToken }));
+const { getSchemaForUser } = require('./middleware/tenantScope.cjs');
 
 // =========================
 // Utilitaires
@@ -2564,10 +2565,11 @@ app.delete('/api/employees/:id/dossier-rh', authenticateToken, async (req, res) 
 
 app.get('/api/employees', authenticateToken, async (req, res) => {
   try {
+    const schema = getSchemaForUser(req.user);
     console.log('👥 Récupération des employés actifs');
 
     const result = await pool.query(`
-      SELECT * FROM employees 
+      SELECT * FROM ${schema}.employees 
       WHERE statut = 'actif' OR statut IS NULL
       ORDER BY nom, prenom
     `);
@@ -2585,10 +2587,11 @@ app.get('/api/employees', authenticateToken, async (req, res) => {
 
 app.get('/api/employees/archives', authenticateToken, async (req, res) => {
   try {
+    const schema = getSchemaForUser(req.user);
     console.log('📁 Récupération des employés archivés');
 
     const result = await pool.query(`
-      SELECT * FROM employees 
+      SELECT * FROM ${schema}.employees 
       WHERE statut = 'archive'
       ORDER BY date_depart DESC, nom, prenom
     `);
@@ -2606,10 +2609,11 @@ app.get('/api/employees/archives', authenticateToken, async (req, res) => {
 
 app.get('/api/employees/search', authenticateToken, async (req, res) => {
   try {
+    const schema = getSchemaForUser(req.user);
     const { q, statut = 'actif' } = req.query;
     console.log('🔍 Recherche employés:', { q, statut });
 
-    let query = 'SELECT * FROM employees WHERE ';
+    let query = `SELECT * FROM ${schema}.employees WHERE `;
     const params = [];
 
     if (statut === 'archive') {
@@ -2642,10 +2646,11 @@ app.get('/api/employees/search', authenticateToken, async (req, res) => {
 
 app.get('/api/employees/:id', authenticateToken, async (req, res) => {
   try {
+    const schema = getSchemaForUser(req.user);
     const { id } = req.params;
     console.log('👤 Récupération employé ID:', id);
 
-    const result = await pool.query('SELECT * FROM employees WHERE id = $1', [
+    const result = await pool.query(`SELECT * FROM ${schema}.employees WHERE id = $1`, [
       id
     ]);
 
@@ -3070,6 +3075,7 @@ app.get('/api/contract-alerts/check', authenticateToken, async (req, res) => {
 
 app.get('/api/demandes', authenticateToken, async (req, res) => {
   try {
+    const schema = getSchemaForUser(req.user);
     const {
       type_demande,
       statut,
@@ -3100,8 +3106,8 @@ app.get('/api/demandes', authenticateToken, async (req, res) => {
         e.mail_responsable1,
         e.mail_responsable2,
         e.adresse_mail as employe_email
-      FROM demande_rh d
-      LEFT JOIN employees e ON d.employe_id = e.id
+      FROM ${schema}.demande_rh d
+      LEFT JOIN ${schema}.employees e ON d.employe_id = e.id
       WHERE 1=1
     `;
     
@@ -3159,7 +3165,7 @@ app.get('/api/demandes', authenticateToken, async (req, res) => {
         
         if (demande.mail_responsable1) {
           const resp1Result = await pool.query(
-            'SELECT nom, prenom FROM employees WHERE adresse_mail = $1 LIMIT 1',
+            `SELECT nom, prenom FROM ${schema}.employees WHERE adresse_mail = $1 LIMIT 1`,
             [demande.mail_responsable1]
           );
           if (resp1Result.rows.length > 0) {
@@ -3173,7 +3179,7 @@ app.get('/api/demandes', authenticateToken, async (req, res) => {
         
         if (demande.mail_responsable2) {
           const resp2Result = await pool.query(
-            'SELECT nom, prenom FROM employees WHERE adresse_mail = $1 LIMIT 1',
+            `SELECT nom, prenom FROM ${schema}.employees WHERE adresse_mail = $1 LIMIT 1`,
             [demande.mail_responsable2]
           );
           if (resp2Result.rows.length > 0) {
@@ -3192,7 +3198,7 @@ app.get('/api/demandes', authenticateToken, async (req, res) => {
       })
     );
 
-    let countQuery = `SELECT COUNT(*) as total_count FROM demande_rh d WHERE 1=1`;
+    let countQuery = `SELECT COUNT(*) as total_count FROM ${schema}.demande_rh d WHERE 1=1`;
     const countParams = [];
     let countParamCount = 0;
 
@@ -3252,6 +3258,7 @@ app.get('/api/demandes', authenticateToken, async (req, res) => {
 
 app.get('/api/demandes/:id', authenticateToken, async (req, res) => {
   try {
+    const schema = getSchemaForUser(req.user);
     const { id } = req.params;
     console.log('📄 Récupération demande ID:', id);
 
@@ -3270,10 +3277,10 @@ app.get('/api/demandes/:id', authenticateToken, async (req, res) => {
              r1.prenom as responsable1_prenom,
              r2.nom as responsable2_nom,
              r2.prenom as responsable2_prenom
-      FROM demande_rh d
-      LEFT JOIN employees e ON d.employe_id = e.id
-      LEFT JOIN employees r1 ON e.mail_responsable1 = r1.adresse_mail
-      LEFT JOIN employees r2 ON e.mail_responsable2 = r2.adresse_mail
+      FROM ${schema}.demande_rh d
+      LEFT JOIN ${schema}.employees e ON d.employe_id = e.id
+      LEFT JOIN ${schema}.employees r1 ON e.mail_responsable1 = r1.adresse_mail
+      LEFT JOIN ${schema}.employees r2 ON e.mail_responsable2 = r2.adresse_mail
       WHERE d.id = $1
     `,
       [id]
@@ -3296,6 +3303,7 @@ app.get('/api/demandes/:id', authenticateToken, async (req, res) => {
 
 app.post('/api/demandes', authenticateToken, async (req, res) => {
   try {
+    const schema = getSchemaForUser(req.user);
     console.log('➕ Création nouvelle demande RH');
 
     const {
@@ -3321,7 +3329,7 @@ app.post('/api/demandes', authenticateToken, async (req, res) => {
 
     const result = await pool.query(
       `
-      INSERT INTO demande_rh (
+      INSERT INTO ${schema}.demande_rh (
         employe_id, type_demande, titre, type_conge, type_conge_autre,
         date_depart, date_retour, heure_depart, heure_retour,
         demi_journee, frais_deplacement, commentaire_refus, statut,
@@ -3358,6 +3366,7 @@ app.post('/api/demandes', authenticateToken, async (req, res) => {
 
 app.put('/api/demandes/:id', authenticateToken, async (req, res) => {
   try {
+    const schema = getSchemaForUser(req.user);
     const { id } = req.params;
     console.log('✏️ Mise à jour demande ID:', id);
 
@@ -3386,7 +3395,7 @@ app.put('/api/demandes/:id', authenticateToken, async (req, res) => {
       finalStatut = 'approuve';
     } else if (approuve_responsable1 === true && !approuve_responsable2) {
       const employeeResult = await pool.query(
-        'SELECT mail_responsable2 FROM employees WHERE id = (SELECT employe_id FROM demande_rh WHERE id = $1)',
+        `SELECT mail_responsable2 FROM ${schema}.employees WHERE id = (SELECT employe_id FROM ${schema}.demande_rh WHERE id = $1)`,
         [id]
       );
       
@@ -3403,7 +3412,7 @@ app.put('/api/demandes/:id', authenticateToken, async (req, res) => {
 
     const result = await pool.query(
       `
-      UPDATE demande_rh 
+      UPDATE ${schema}.demande_rh 
       SET type_demande = $1, titre = $2, type_conge = $3, type_conge_autre = $4,
           date_depart = $5, date_retour = $6, heure_depart = $7, heure_retour = $8,
           demi_journee = $9, frais_deplacement = $10, statut = $11,
@@ -3448,6 +3457,7 @@ app.put('/api/demandes/:id', authenticateToken, async (req, res) => {
 
 app.put('/api/demandes/:id/statut', authenticateToken, async (req, res) => {
   try {
+    const schema = getSchemaForUser(req.user);
     const { id } = req.params;
     const { statut, commentaire_refus } = req.body;
 
@@ -3455,7 +3465,7 @@ app.put('/api/demandes/:id/statut', authenticateToken, async (req, res) => {
 
     const result = await pool.query(
       `
-      UPDATE demande_rh 
+      UPDATE ${schema}.demande_rh 
       SET statut = $1, commentaire_refus = $2, updated_at = CURRENT_TIMESTAMP
       WHERE id = $3
       RETURNING *
@@ -3480,11 +3490,12 @@ app.put('/api/demandes/:id/statut', authenticateToken, async (req, res) => {
 
 app.delete('/api/demandes/:id', authenticateToken, async (req, res) => {
   try {
+    const schema = getSchemaForUser(req.user);
     const { id } = req.params;
     console.log('🗑️ Suppression demande ID:', id);
 
     const result = await pool.query(
-      'DELETE FROM demande_rh WHERE id = $1 RETURNING *',
+      `DELETE FROM ${schema}.demande_rh WHERE id = $1 RETURNING *`,
       [id]
     );
 
@@ -3521,13 +3532,14 @@ app.delete('/api/demandes/:id', authenticateToken, async (req, res) => {
 // MODIFIÉ : Ne compte que les demandes non lues
 app.get('/api/notifications/count', authenticateToken, async (req, res) => {
   try {
+    const schema = getSchemaForUser(req.user);
     console.log('🔔 Récupération du nombre de notifications non lues');
 
     // Compter les demandes en attente créées dans les dernières 24h
     // qui n'ont pas été marquées comme lues
     const result = await pool.query(`
       SELECT COUNT(*) as count
-      FROM demande_rh
+      FROM ${schema}.demande_rh
       WHERE statut = 'en_attente'
         AND created_at >= NOW() - INTERVAL '24 hours'
         AND (last_viewed_at IS NULL OR last_viewed_at < created_at)
@@ -3554,6 +3566,7 @@ app.get('/api/notifications/count', authenticateToken, async (req, res) => {
 // MODIFIÉ : Inclure l'état de lecture
 app.get('/api/notifications/recent', authenticateToken, async (req, res) => {
   try {
+    const schema = getSchemaForUser(req.user);
     console.log('🔔 Récupération des notifications récentes');
 
     const result = await pool.query(`
@@ -3570,8 +3583,8 @@ app.get('/api/notifications/recent', authenticateToken, async (req, res) => {
           WHEN d.last_viewed_at IS NULL OR d.last_viewed_at < d.created_at THEN false
           ELSE true
         END as read
-      FROM demande_rh d
-      LEFT JOIN employees e ON d.employe_id = e.id
+      FROM ${schema}.demande_rh d
+      LEFT JOIN ${schema}.employees e ON d.employe_id = e.id
       WHERE d.statut = 'en_attente'
         AND d.created_at >= NOW() - INTERVAL '24 hours'
       ORDER BY d.created_at DESC
@@ -3596,13 +3609,14 @@ app.get('/api/notifications/recent', authenticateToken, async (req, res) => {
 // NOUVELLE ROUTE : Marquer une notification comme lue
 app.post('/api/notifications/:id/mark-read', authenticateToken, async (req, res) => {
   try {
+    const schema = getSchemaForUser(req.user);
     const { id } = req.params;
     
     console.log('✅ Marquer notification comme lue:', id);
     
     // Mettre à jour la date de dernière visualisation
     await pool.query(
-      'UPDATE demande_rh SET last_viewed_at = CURRENT_TIMESTAMP WHERE id = $1',
+      `UPDATE ${schema}.demande_rh SET last_viewed_at = CURRENT_TIMESTAMP WHERE id = $1`,
       [id]
     );
     
@@ -3623,11 +3637,12 @@ app.post('/api/notifications/:id/mark-read', authenticateToken, async (req, res)
 // NOUVELLE ROUTE : Marquer toutes les notifications comme lues
 app.post('/api/notifications/mark-all-read', authenticateToken, async (req, res) => {
   try {
+    const schema = getSchemaForUser(req.user);
     console.log('✅ Marquer toutes les notifications comme lues');
     
     // Marquer toutes les notifications non lues comme lues
     await pool.query(`
-      UPDATE demande_rh 
+      UPDATE ${schema}.demande_rh 
       SET last_viewed_at = CURRENT_TIMESTAMP 
       WHERE statut = 'en_attente'
         AND created_at >= NOW() - INTERVAL '24 hours'
@@ -3651,6 +3666,7 @@ app.post('/api/notifications/mark-all-read', authenticateToken, async (req, res)
 // NOUVELLE ROUTE : Vérifier si une notification est lue
 app.get('/api/notifications/:id/status', authenticateToken, async (req, res) => {
   try {
+    const schema = getSchemaForUser(req.user);
     const { id } = req.params;
     
     const result = await pool.query(`
@@ -3659,7 +3675,7 @@ app.get('/api/notifications/:id/status', authenticateToken, async (req, res) => 
           WHEN last_viewed_at IS NULL OR last_viewed_at < created_at THEN false
           ELSE true
         END as read
-      FROM demande_rh 
+      FROM ${schema}.demande_rh 
       WHERE id = $1
     `, [id]);
     
@@ -3686,11 +3702,12 @@ app.get('/api/notifications/:id/status', authenticateToken, async (req, res) => 
 
 app.get('/api/presence/overview', authenticateToken, async (req, res) => {
   try {
+    const schema = getSchemaForUser(req.user);
     const { startDate, endDate } = req.query;
     
     const employeesQuery = await pool.query(`
       SELECT id, matricule, nom, prenom, poste, photo
-      FROM employees 
+      FROM ${schema}.employees 
       WHERE statut = 'actif'
       ORDER BY nom, prenom
     `);
@@ -3699,8 +3716,8 @@ app.get('/api/presence/overview', authenticateToken, async (req, res) => {
     
     const demandesQuery = await pool.query(`
       SELECT d.*, e.nom as employe_nom, e.prenom as employe_prenom
-      FROM demande_rh d
-      LEFT JOIN employees e ON d.employe_id = e.id
+      FROM ${schema}.demande_rh d
+      LEFT JOIN ${schema}.employees e ON d.employe_id = e.id
       WHERE d.statut = 'approuve'
         AND d.date_depart <= $1
         AND (d.date_retour IS NULL OR d.date_retour >= $2)
@@ -4058,9 +4075,10 @@ async function saveGeneratedDocxAndUpdateDoc({ buffer, filename, docId }) {
 // ==================================================
 app.get("/api/employee", authenticateToken, async (req, res) => {
   try {
+    const schema = getSchemaForUser(req.user);
     const result = await pool.query(
       `SELECT id, nom, prenom, poste, statut
-       FROM employees
+       FROM ${schema}.employees
        WHERE statut = 'actif'
        ORDER BY nom, prenom`
     );

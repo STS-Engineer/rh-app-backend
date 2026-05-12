@@ -1,0 +1,42 @@
+# === Node modules ===
+node_modules/
+
+# === Build output (Azure / Netlify / Vercel) ===
+build/
+dist/
+
+# === Environment variables ===
+.env
+.env.local
+.env.development
+.env.production
+
+# === Logs ===
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# === Editor / IDE folders ===
+.vscode/
+.idea/
+
+# === System files ===
+.DS_Store
+Thumbs.db
+
+# === Optional caches ===
+.cache/
+.parcel-cache/
+.next/
+out/
+coverage/
+
+# === Misc ===
+*.local
+*.lock-wscript
+
+# === Temporary files ===
+*.tmp
+*.swp
+*.swo
