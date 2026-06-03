@@ -4086,15 +4086,27 @@ async function saveGeneratedDocxAndUpdateDoc({ buffer, filename, docId }) {
   fs.writeFileSync(outPath, buffer);
 
   const fileUrl = buildVisaGeneratedUrl(filename);
+  const existingDoc = await pool.query(
+    `SELECT statut
+     FROM visa_documents
+     WHERE id = $1`,
+    [docId]
+  );
+
+  if (!existingDoc.rows.length) {
+    throw new Error("Document VISA introuvable");
+  }
+
+  const nextStatus = existingDoc.rows[0].statut === "RECEIVED_PHYSICAL" ? "RECEIVED_PHYSICAL" : "GENERATED";
 
   await pool.query(
     `UPDATE visa_documents
-     SET statut = 'UPLOADED',
-         file_url = $1,
-         original_filename = $2,
+     SET statut = $1,
+         file_url = $2,
+         original_filename = $3,
          updated_at = now()
-     WHERE id = $3`,
-    [fileUrl, filename, docId]
+     WHERE id = $4`,
+    [nextStatus, fileUrl, filename, docId]
   );
 
   return { fileUrl };
@@ -4125,7 +4137,7 @@ async function saveGeneratedInvitationDocAndUpdateDoc({ buffer, filename, docId 
   const signedOriginalFilename = isPdfReference(current.file_url, current.original_filename)
     ? current.original_filename
     : null;
-  const nextStatus = signedFileUrl ? current.statut || "UPLOADED" : "MISSING";
+  const nextStatus = current.statut === "RECEIVED_PHYSICAL" ? "RECEIVED_PHYSICAL" : "GENERATED";
 
   await pool.query(
     `UPDATE visa_documents
@@ -4188,8 +4200,8 @@ app.get("/api/visa-dossiers", authenticateToken, async (req, res) => {
         COUNT(vd.id)::int AS total_docs,
         COALESCE(SUM(
           CASE
-            WHEN vd.mode = 'UPLOAD'  AND vd.statut = 'UPLOADED' THEN 1
-            WHEN vd.mode = 'PHYSICAL' AND vd.statut = 'RECEIVED_PHYSICAL' THEN 1
+            WHEN vd.statut = 'RECEIVED_PHYSICAL' THEN 1
+            WHEN vd.mode = 'UPLOAD' AND vd.statut = 'UPLOADED' THEN 1
             ELSE 0
           END
         ), 0)::int AS ok_docs
@@ -4216,6 +4228,7 @@ app.get("/api/visa-dossiers", authenticateToken, async (req, res) => {
         departureDate: r.date_depart,
         returnDate: r.date_retour,
         motif: r.motif_deplacement,
+        destination: r.destination,
         status: r.statut,
         visa: {
           numero: r.numero_visa,
@@ -4269,6 +4282,7 @@ app.get("/api/visa-dossiers/:id", authenticateToken, async (req, res) => {
       departureDate: r.date_depart,
       returnDate: r.date_retour,
       motif: r.motif_deplacement,
+      destination: r.destination,
       status: r.statut,
       documents: docsRes.rows.map((d) => ({
         id: d.id,
@@ -4733,103 +4747,6 @@ app.post("/api/ordre-mission", authenticateToken, async (req, res) => {
     res.json({ fileUrl, filename: docxResult.filename });
   } catch (err) {
     res.status(500).json({ message: err.message });
-  }
-});
-
-// --------------------------------------------------
-// PDF COMPLET DOSSIER VISA (fusion des PDF seulement)
-// --------------------------------------------------
-app.get("/api/visa-dossiers/:id/dossier-pdf", async (req, res) => {
-  const dossierId = Number(req.params.id);
-
-  try {
-    const dossierRes = await pool.query(
-      `SELECT e.prenom, e.nom
-       FROM visa_dossiers d
-       JOIN employees e ON e.id = d.employee_id
-       WHERE d.id = $1`,
-      [dossierId]
-    );
-
-    if (!dossierRes.rows.length) {
-      return res.status(404).json({ message: "Dossier introuvable" });
-    }
-
-    const { prenom, nom } = dossierRes.rows[0];
-
-    const docsRes = await pool.query(
-      `SELECT file_url
-       FROM visa_documents
-       WHERE dossier_id = $1
-         AND statut = 'UPLOADED'
-         AND file_url IS NOT NULL
-       ORDER BY id ASC`,
-      [dossierId]
-    );
-
-    const docs = docsRes.rows.filter((d) =>
-      String(d.file_url).toLowerCase().endsWith(".pdf")
-    );
-
-    if (!docs.length) {
-      return res.status(400).json({
-        message: "Aucun document PDF téléchargé à fusionner pour ce dossier.",
-      });
-    }
-
-    const mergedPdf = await PDFDocument.create();
-
-    function fileUrlToLocalPath(fileUrl) {
-      let pathname = fileUrl;
-      if (fileUrl.startsWith("http")) {
-        pathname = decodeURIComponent(new URL(fileUrl).pathname);
-      }
-
-      const prefix = "/api/visa-pdfs/";
-      if (!pathname.startsWith(prefix)) {
-        throw new Error(`file_url invalide (doit commencer par ${prefix})`);
-      }
-
-      const filename = pathname.replace(prefix, "");
-      const localPath = path.join(visaPdfDir, filename);
-
-      const resolved = path.resolve(localPath);
-      const resolvedDir = path.resolve(visaPdfDir);
-      if (!resolved.startsWith(resolvedDir)) {
-        throw new Error("Chemin fichier non autorisé");
-      }
-      return resolved;
-    }
-
-    for (const d of docs) {
-      const localPath = fileUrlToLocalPath(d.file_url);
-
-      if (!fs.existsSync(localPath)) {
-        throw new Error(`Fichier introuvable : ${localPath}`);
-      }
-
-      const pdfBytes = fs.readFileSync(localPath);
-      const pdf = await PDFDocument.load(pdfBytes);
-
-      const pages = await mergedPdf.copyPages(pdf, pdf.getPageIndices());
-      pages.forEach((p) => mergedPdf.addPage(p));
-    }
-
-    const finalPdf = await mergedPdf.save();
-
-    const employeePart = safeFilename(`${prenom}_${nom}`);
-    const datePart = new Date().toISOString().slice(0, 10);
-    const filename = `Dossier_Visa_${employeePart}_${datePart}.pdf`;
-
-    res.setHeader("Content-Type", "application/pdf");
-    res.setHeader("Content-Disposition", `inline; filename="${filename}"`);
-
-    return res.send(Buffer.from(finalPdf));
-  } catch (err) {
-    console.error("❌ dossier-pdf error:", err);
-    return res.status(500).json({
-      message: err.message || "Erreur génération PDF du dossier",
-    });
   }
 });
 
