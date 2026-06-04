@@ -5144,6 +5144,7 @@ app.post('/api/demandes/:id/approuver-app', authenticateToken, async (req, res) 
     const result = await pool.query(
       `SELECT d.*, 
               e.nom, e.prenom, e.adresse_mail, e.poste, e.matricule,
+              e.mail_responsable1,
               e.mail_responsable2
        FROM demande_rh d
        JOIN employees e ON d.employe_id = e.id
@@ -5164,17 +5165,19 @@ app.post('/api/demandes/:id/approuver-app', authenticateToken, async (req, res) 
       });
     }
 
-    // ✅ FIX: if resp2 exists, stay en_attente until manager acts
-    const hasResp2 = !!demande.mail_responsable2;
-    const newStatut = hasResp2 ? 'en_attente' : 'approuve';
+    const hasResp1 = !!demande.mail_responsable1;
+    const approbationResponsable1 = demande.approuve_responsable1 === true;
+    const approbationResponsable2 = true;
+    const newStatut = !hasResp1 || approbationResponsable1 ? 'approuve' : 'en_attente';
 
     await pool.query(
       `UPDATE demande_rh 
        SET statut = $1, 
-           approuve_responsable1 = true,
+           approuve_responsable2 = $2,
+           approuve_responsable1 = $3,
            updated_at = CURRENT_TIMESTAMP 
-       WHERE id = $2`,
-      [newStatut, id]
+       WHERE id = $4`,
+      [newStatut, approbationResponsable2, approbationResponsable1, id]
     );
 
     const typeLabel =
@@ -5342,7 +5345,7 @@ app.post('/api/demandes/:id/refuser-app', authenticateToken, async (req, res) =>
     await pool.query(
       `UPDATE demande_rh 
        SET statut = 'refuse', 
-           approuve_responsable1 = false,
+           approuve_responsable2 = false,
            commentaire_refus = $1,
            updated_at = CURRENT_TIMESTAMP 
        WHERE id = $2`,
