@@ -23,7 +23,7 @@ const SMTP_HOST = "avocarbon-com.mail.protection.outlook.com";
 const SMTP_PORT = 25;
 const EMAIL_FROM_NAME = "Administration STS";
 const EMAIL_FROM = "administration.STS@avocarbon.com";
-const RH_ADMIN_EMAIL = "rihem.arfaoui@avocarbon.com";
+const RH_ADMIN_EMAIL = "nesria.ibrahim@avocarbon.com";
 const DEMANDE_STATUS_ANNULEE = "annulee";
 
 console.log('📧 Configuration SMTP Outlook:', {
@@ -5450,7 +5450,7 @@ app.post('/api/demandes/:id/approuver-app', authenticateToken, async (req, res) 
           name: EMAIL_FROM_NAME,
           address: EMAIL_FROM
         },
-        to: 'rihem.arfaoui@avocarbon.com',
+        to: 'nesria.ibrahim@avocarbon.com',
         subject: `📋 Demande RH approuvée - ${demande.prenom} ${demande.nom}`,
         html: `
           <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
@@ -5504,7 +5504,7 @@ app.post('/api/demandes/:id/approuver-app', authenticateToken, async (req, res) 
             <p style="color: #6b7280; font-size: 14px;">Notification automatique du système RH.</p>
           </div>
         `;
-        await sendEmail('rihem.arfaoui@avocarbon.com', 
+        await sendEmail('nesria.ibrahim@avocarbon.com', 
           `📋 Demande RH approuvée - ${demande.prenom} ${demande.nom}`, 
           htmlRH);
       } catch (fallbackError) {
