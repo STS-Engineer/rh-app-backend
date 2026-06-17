@@ -322,6 +322,18 @@ pool.on('error', err => {
   console.error('❌ Erreur inattendue du pool PostgreSQL:', err);
 });
 
+async function ensureVisaGeneratedColumns() {
+  try {
+    await pool.query(`ALTER TABLE visa_documents ADD COLUMN IF NOT EXISTS generated_file_url TEXT`);
+    await pool.query(`ALTER TABLE visa_documents ADD COLUMN IF NOT EXISTS generated_original_filename TEXT`);
+    console.log("âœ… Colonnes VISA generated prÃªtes");
+  } catch (err) {
+    console.error("âŒ Erreur ajout colonnes VISA generated:", err.message);
+  }
+}
+
+ensureVisaGeneratedColumns();
+
 // =========================
 // Middleware d'authentification
 // =========================
@@ -344,9 +356,98 @@ const authenticateToken = (req, res, next) => {
   });
 };
 
+function resolveEmployeeSchemaForRequest(user, requestedSchema) {
+  const fallbackSchema = getSchemaForUser(user);
+  if (!requestedSchema) return fallbackSchema;
+
+  if (isGroupRole(user?.role)) {
+    const allowedSchemas = getAccessibleEmployeeSchemas(user);
+    return allowedSchemas.includes(requestedSchema) ? requestedSchema : fallbackSchema;
+  }
+
+  return fallbackSchema;
+}
+
+async function resolveEmployeeSchemaById(user, employeeId, requestedSchema) {
+  if (requestedSchema) {
+    if (isGroupRole(user?.role)) {
+      const allowedSchemas = getAccessibleEmployeeSchemas(user);
+      if (!allowedSchemas.includes(requestedSchema)) {
+        const error = new Error('Tenant schema not allowed for this user');
+        error.statusCode = 403;
+        error.code = 'TENANT_SCHEMA_FORBIDDEN';
+        throw error;
+      }
+    }
+    return resolveEmployeeSchemaForRequest(user, requestedSchema);
+  }
+
+  if (!isGroupRole(user?.role)) {
+    return resolveEmployeeSchemaForRequest(user);
+  }
+
+  const schemas = getAccessibleEmployeeSchemas(user);
+  const matches = [];
+
+  for (const schema of schemas) {
+    const result = await pool.query(
+      `SELECT 1 FROM ${schema}.employees WHERE id = $1 LIMIT 1`,
+      [employeeId]
+    );
+    if (result.rows.length) {
+      matches.push(schema);
+    }
+  }
+
+  if (matches.length === 1) {
+    return matches[0];
+  }
+
+  if (matches.length > 1) {
+    const error = new Error('Multiple employees match this id across schemas');
+    error.statusCode = 409;
+    error.code = 'AMBIGUOUS_TENANT_SCHEMA';
+    error.matches = matches;
+    throw error;
+  }
+
+  return null;
+}
+
 const createTenantApi = require('./routes/tenant-api.cjs');
 app.use('/api/v2', createTenantApi({ pool, authenticateToken }));
-const { getSchemaForUser } = require('./middleware/tenantScope.cjs');
+const {
+  getAccessibleEmployeeSchemas,
+  getSchemaForUser,
+  inferCountryKey,
+  isGroupRole
+} = require('./middleware/tenantScope.cjs');
+
+function isTunisiaTenantUser(user) {
+  const tenantText = [
+    user?.country,
+    user?.plant,
+    user?.tenant_schema,
+    user?.tenant_id
+  ].filter(Boolean).join(' ').toLowerCase();
+
+  return (
+    inferCountryKey(user) === 'tunisia' ||
+    tenantText.includes('tunisia') ||
+    tenantText.includes('public') ||
+    tenantText.includes('sts') ||
+    tenantText.includes('sceet') ||
+    tenantText.includes('same service') ||
+    tenantText.includes('same-service')
+  );
+}
+
+function requireTunisiaTenant(req, res, next) {
+  if (!isTunisiaTenantUser(req.user)) {
+    return res.status(403).json({ message: 'This feature is available only for Tunisia tenant' });
+  }
+  next();
+}
 
 // =========================
 // Utilitaires
@@ -765,15 +866,25 @@ app.put('/api/employees/:id/archive', authenticateToken, async (req, res) => {
   try {
     const { id } = req.params;
     const { pdf_url, entretien_depart, date_depart } = req.body;
+    const requestedSchema = req.body?.tenant_schema || req.query?.tenant_schema;
+    const schema = await resolveEmployeeSchemaById(req.user, id, requestedSchema);
 
     console.log('📁 Archivage employé ID:', id, {
       pdf_url: pdf_url ? 'PDF fourni' : 'Aucun PDF',
-      date_depart: date_depart
+      date_depart: date_depart,
+      tenant_schema: schema
     });
+
+    if (!schema) {
+      return res.status(404).json({
+        success: false,
+        error: 'Employé non trouvé'
+      });
+    }
 
     // Vérifier si l'employé existe
     const employeeCheck = await pool.query(
-      'SELECT id, statut FROM employees WHERE id = $1',
+      `SELECT id, statut FROM ${schema}.employees WHERE id = $1`,
       [id]
     );
 
@@ -843,7 +954,7 @@ app.put('/api/employees/:id/archive', authenticateToken, async (req, res) => {
     values.push(id); // Pour le WHERE
 
     const query = `
-      UPDATE employees 
+      UPDATE ${schema}.employees 
       SET ${setClauses.join(', ')}
       WHERE id = $${paramIndex}
       RETURNING *
@@ -864,6 +975,14 @@ app.put('/api/employees/:id/archive', authenticateToken, async (req, res) => {
     });
   } catch (error) {
     console.error("❌ Erreur archivage:", error);
+    if (error.statusCode) {
+      return res.status(error.statusCode).json({
+        success: false,
+        error: error.message,
+        code: error.code,
+        matches: error.matches || undefined
+      });
+    }
     
     let errorMessage = "Erreur lors de l'archivage de l'employé";
     
@@ -2423,6 +2542,8 @@ app.post('/api/auth/login', async (req, res) => {
       console.log('👤 Utilisateur trouvé:', user.email);
 
       const isPasswordValid = await bcrypt.compare(password, user.password);
+      const tenantSchema = getSchemaForUser(user);
+      const countryKey = inferCountryKey(user);
 
       if (isPasswordValid) {
         console.log('✅ Mot de passe correct');
@@ -2434,6 +2555,8 @@ app.post('/api/auth/login', async (req, res) => {
             role: user.role || 'user',
             tenant_id: user.tenant_id || null,
             plant: user.plant || null,
+            country: countryKey,
+            tenant_schema: tenantSchema,
             name: user.name || null
           },
           JWT_SECRET,
@@ -2449,6 +2572,8 @@ app.post('/api/auth/login', async (req, res) => {
             role: user.role || 'user',
             tenant_id: user.tenant_id || null,
             plant: user.plant || null,
+            country: countryKey,
+            tenant_schema: tenantSchema,
             name: user.name || null
           }
         });
@@ -2487,12 +2612,22 @@ app.post('/api/auth/login', async (req, res) => {
 app.delete('/api/employees/:id/dossier-rh', authenticateToken, async (req, res) => {
   try {
     const { id } = req.params;
+    const schema = await resolveEmployeeSchemaById(req.user, id, req.query.tenant_schema || req.body?.tenant_schema);
     
-    console.log('🗑️ Suppression dossier RH pour employé ID:', id);
+    console.log('🗑️ Suppression dossier RH pour employé ID:', id, {
+      tenant_schema: schema
+    });
+
+    if (!schema) {
+      return res.status(404).json({
+        success: false,
+        error: 'Employé non trouvé'
+      });
+    }
 
     // Récupérer l'employé pour avoir l'URL du dossier RH
     const employeeResult = await pool.query(
-      'SELECT id, nom, prenom, matricule, dossier_rh FROM employees WHERE id = $1',
+      `SELECT id, nom, prenom, matricule, dossier_rh FROM ${schema}.employees WHERE id = $1`,
       [id]
     );
 
@@ -2538,7 +2673,7 @@ app.delete('/api/employees/:id/dossier-rh', authenticateToken, async (req, res) 
 
     // Mettre à jour la base de données pour supprimer le lien
     const updateResult = await pool.query(
-      'UPDATE employees SET dossier_rh = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = $1 RETURNING *',
+      `UPDATE ${schema}.employees SET dossier_rh = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = $1 RETURNING *`,
       [id]
     );
 
@@ -2553,6 +2688,14 @@ app.delete('/api/employees/:id/dossier-rh', authenticateToken, async (req, res) 
 
   } catch (error) {
     console.error('❌ Erreur suppression dossier RH:', error);
+    if (error.statusCode) {
+      return res.status(error.statusCode).json({
+        success: false,
+        error: error.message,
+        code: error.code,
+        matches: error.matches || undefined
+      });
+    }
     res.status(500).json({
       success: false,
       error: 'Erreur lors de la suppression du dossier RH',
@@ -2565,17 +2708,24 @@ app.delete('/api/employees/:id/dossier-rh', authenticateToken, async (req, res) 
 
 app.get('/api/employees', authenticateToken, async (req, res) => {
   try {
-    const schema = getSchemaForUser(req.user);
     console.log('👥 Récupération des employés actifs');
 
-    const result = await pool.query(`
-      SELECT * FROM ${schema}.employees 
-      WHERE statut = 'actif' OR statut IS NULL
-      ORDER BY nom, prenom
-    `);
+    const schemas = getAccessibleEmployeeSchemas(req.user);
+    const results = await Promise.all(
+      schemas.map(async (schema) => {
+        const result = await pool.query(`
+          SELECT e.*, '${schema}' AS tenant_schema
+          FROM ${schema}.employees e
+          WHERE e.statut = 'actif' OR e.statut IS NULL
+          ORDER BY e.nom, e.prenom
+        `);
+        return result.rows;
+      })
+    );
 
-    console.log(`✅ ${result.rows.length} employés actifs récupérés`);
-    res.json(result.rows);
+    const employees = results.flat();
+    console.log(`✅ ${employees.length} employés actifs récupérés`);
+    res.json(employees);
   } catch (error) {
     console.error('❌ Erreur récupération employés:', error);
     res.status(500).json({
@@ -2587,17 +2737,24 @@ app.get('/api/employees', authenticateToken, async (req, res) => {
 
 app.get('/api/employees/archives', authenticateToken, async (req, res) => {
   try {
-    const schema = getSchemaForUser(req.user);
     console.log('📁 Récupération des employés archivés');
 
-    const result = await pool.query(`
-      SELECT * FROM ${schema}.employees 
-      WHERE statut = 'archive'
-      ORDER BY date_depart DESC, nom, prenom
-    `);
+    const schemas = getAccessibleEmployeeSchemas(req.user);
+    const results = await Promise.all(
+      schemas.map(async (schema) => {
+        const result = await pool.query(`
+          SELECT e.*, '${schema}' AS tenant_schema
+          FROM ${schema}.employees e
+          WHERE e.statut = 'archive'
+          ORDER BY e.date_depart DESC, e.nom, e.prenom
+        `);
+        return result.rows;
+      })
+    );
 
-    console.log(`✅ ${result.rows.length} employés archivés récupérés`);
-    res.json(result.rows);
+    const employees = results.flat();
+    console.log(`✅ ${employees.length} employés archivés récupérés`);
+    res.json(employees);
   } catch (error) {
     console.error('❌ Erreur récupération archives:', error);
     res.status(500).json({
@@ -2609,32 +2766,36 @@ app.get('/api/employees/archives', authenticateToken, async (req, res) => {
 
 app.get('/api/employees/search', authenticateToken, async (req, res) => {
   try {
-    const schema = getSchemaForUser(req.user);
     const { q, statut = 'actif' } = req.query;
     console.log('🔍 Recherche employés:', { q, statut });
+    const schemas = getAccessibleEmployeeSchemas(req.user);
+    const results = await Promise.all(
+      schemas.map(async (schema) => {
+        let query = `SELECT e.*, '${schema}' AS tenant_schema FROM ${schema}.employees e WHERE `;
+        const params = [];
 
-    let query = `SELECT * FROM ${schema}.employees WHERE `;
-    const params = [];
+        if (statut === 'archive') {
+          query += 'e.statut = $1';
+          params.push('archive');
+        } else {
+          query += '(e.statut = $1 OR e.statut IS NULL)';
+          params.push('actif');
+        }
 
-    if (statut === 'archive') {
-      query += 'statut = $1';
-      params.push('archive');
-    } else {
-      query += '(statut = $1 OR statut IS NULL)';
-      params.push('actif');
-    }
+        if (q) {
+          query += ' AND (e.nom ILIKE $2 OR e.prenom ILIKE $2 OR e.poste ILIKE $2 OR e.matricule ILIKE $2 OR e.adresse_mail ILIKE $2)';
+          params.push(`%${q}%`);
+        }
 
-    if (q) {
-      query += ' AND (nom ILIKE $2 OR prenom ILIKE $2 OR poste ILIKE $2 OR matricule ILIKE $2 OR adresse_mail ILIKE $2)';
-      params.push(`%${q}%`);
-    }
+        query += ' ORDER BY e.nom, e.prenom';
+        const result = await pool.query(query, params);
+        return result.rows;
+      })
+    );
 
-    query += ' ORDER BY nom, prenom';
-
-    const result = await pool.query(query, params);
-
-    console.log(`✅ ${result.rows.length} employés trouvés`);
-    res.json(result.rows);
+    const employees = results.flat();
+    console.log(`✅ ${employees.length} employés trouvés`);
+    res.json(employees);
   } catch (error) {
     console.error('❌ Erreur recherche employés:', error);
     res.status(500).json({
@@ -2646,21 +2807,45 @@ app.get('/api/employees/search', authenticateToken, async (req, res) => {
 
 app.get('/api/employees/:id', authenticateToken, async (req, res) => {
   try {
-    const schema = getSchemaForUser(req.user);
     const { id } = req.params;
     console.log('👤 Récupération employé ID:', id);
+    const requestedSchema = req.query.tenant_schema;
 
-    const result = await pool.query(`SELECT * FROM ${schema}.employees WHERE id = $1`, [
-      id
-    ]);
+    if (requestedSchema) {
+      if (isGroupRole(req.user?.role)) {
+        const allowedSchemas = getAccessibleEmployeeSchemas(req.user);
+        if (!allowedSchemas.includes(requestedSchema)) {
+          return res.status(403).json({ error: 'tenant_schema non autorisé' });
+        }
+      }
+      const schema = resolveEmployeeSchemaForRequest(req.user, requestedSchema);
+      const result = await pool.query(`SELECT e.*, '${schema}' AS tenant_schema FROM ${schema}.employees e WHERE e.id = $1`, [id]);
+      if (result.rows.length === 0) {
+        return res.status(404).json({ error: 'Employé non trouvé' });
+      }
+      return res.json(result.rows[0]);
+    }
 
-    if (result.rows.length === 0) {
-      return res.status(404).json({
-        error: 'Employé non trouvé'
+    const schemas = getAccessibleEmployeeSchemas(req.user);
+    const results = await Promise.all(
+      schemas.map(async (schema) => {
+        const result = await pool.query(`SELECT e.*, '${schema}' AS tenant_schema FROM ${schema}.employees e WHERE e.id = $1`, [id]);
+        return result.rows;
+      })
+    );
+
+    const matches = results.flat();
+    if (matches.length === 0) {
+      return res.status(404).json({ error: 'Employé non trouvé' });
+    }
+    if (matches.length > 1) {
+      return res.status(409).json({
+        error: 'Employé ambigu entre plusieurs pays',
+        message: 'Veuillez préciser tenant_schema'
       });
     }
 
-    res.json(result.rows[0]);
+    res.json(matches[0]);
   } catch (error) {
     console.error('❌ Erreur récupération employé:', error);
     res.status(500).json({
@@ -2674,6 +2859,14 @@ app.put('/api/employees/:id', authenticateToken, async (req, res) => {
   try {
     const { id } = req.params;
     console.log('✏️ Mise à jour employé ID:', id);
+    const schema = await resolveEmployeeSchemaById(req.user, id, req.body.tenant_schema);
+
+    if (!schema) {
+      return res.status(404).json({
+        success: false,
+        error: 'Employé non trouvé'
+      });
+    }
 
     const {
       matricule,
@@ -2736,11 +2929,10 @@ app.put('/api/employees/:id', authenticateToken, async (req, res) => {
       photoUrl = getDefaultAvatar(nom, prenom);
     }
 
-    // VÉRIFIEZ LE NOMBRE DE PARAMÈTRES :
-    // Vous avez 22 "?" dans la requête, donc 22 éléments dans le tableau
+    // Build the update dynamically so each schema only receives its own columns.
     const result = await pool.query(
       `
-      UPDATE employees 
+      UPDATE ${schema}.employees
       SET matricule = $1, nom = $2, prenom = $3, cin = $4, passeport = $5,
           date_emission_passport = $6, date_expiration_passport = $7,
           date_naissance = $8, poste = $9, site_dep = $10, type_contrat = $11,
@@ -2803,9 +2995,12 @@ app.put('/api/employees/:id', authenticateToken, async (req, res) => {
       }
     }
     
+    const employee = result.rows[0];
+    employee.tenant_schema = schema;
+
     res.json({
       success: true,
-      data: result.rows[0],
+      data: employee,
       message: 'Employé mis à jour avec succès'
     });
   } catch (error) {
@@ -2817,6 +3012,15 @@ app.put('/api/employees/:id', authenticateToken, async (req, res) => {
       message: error.message,
       stack: error.stack
     });
+
+    if (error.statusCode) {
+      return res.status(error.statusCode).json({
+        success: false,
+        error: error.message,
+        code: error.code,
+        matches: error.matches || undefined
+      });
+    }
     
     let errorMessage = "Erreur lors de la mise à jour de l'employé";
     
@@ -2846,6 +3050,26 @@ app.put('/api/employees/:id', authenticateToken, async (req, res) => {
 app.post('/api/employees', authenticateToken, async (req, res) => {
   try {
     console.log('➕ Création nouvel employé');
+    const requestedSchema = req.body.tenant_schema;
+
+    if (isGroupRole(req.user?.role) && !requestedSchema) {
+      return res.status(400).json({
+        success: false,
+        error: 'tenant_schema est obligatoire pour les rôles groupe'
+      });
+    }
+
+    if (isGroupRole(req.user?.role)) {
+      const allowedSchemas = getAccessibleEmployeeSchemas(req.user);
+      if (!allowedSchemas.includes(requestedSchema)) {
+        return res.status(403).json({
+          success: false,
+          error: 'tenant_schema non autorisé'
+        });
+      }
+    }
+
+    const schema = resolveEmployeeSchemaForRequest(req.user, requestedSchema);
 
     const {
       matricule,
@@ -2942,7 +3166,7 @@ app.post('/api/employees', authenticateToken, async (req, res) => {
     // REQUÊTE CORRIGÉE : 20 paramètres au lieu de 19
     const result = await pool.query(
       `
-      INSERT INTO employees 
+      INSERT INTO ${schema}.employees 
       (matricule, nom, prenom, cin, passeport, 
        date_emission_passport, date_expiration_passport,
        date_naissance, poste, site_dep, type_contrat, 
@@ -2975,7 +3199,9 @@ app.post('/api/employees', authenticateToken, async (req, res) => {
       ]
     );
 
-    console.log('✅ Employé créé, ID:', result.rows[0].id);
+    const employee = result.rows[0];
+    employee.tenant_schema = schema;
+    console.log('✅ Employé créé, ID:', employee.id);
 
     // Vérifier si besoin d'envoyer une alerte
     if (date_fin_contrat) {
@@ -2995,7 +3221,7 @@ app.post('/api/employees', authenticateToken, async (req, res) => {
 
     res.json({
       success: true,
-      data: result.rows[0],
+      data: employee,
       message: 'Employé créé avec succès'
     });
     
@@ -3798,6 +4024,7 @@ app.get("/api/visa-generated/:filename", (req, res) => {
   try {
     const filename = path.basename(req.params.filename);
     const filePath = path.join(visaGeneratedDir, filename);
+    const dispositionType = req.query.download === "1" ? "attachment" : "inline";
 
     if (!fs.existsSync(filePath)) {
       return res.status(404).json({ error: "Fichier VISA généré introuvable" });
@@ -3810,7 +4037,7 @@ app.get("/api/visa-generated/:filename", (req, res) => {
         : "application/octet-stream";
 
     res.setHeader("Content-Type", contentType);
-    res.setHeader("Content-Disposition", `inline; filename="${filename}"`);
+    res.setHeader("Content-Disposition", `${dispositionType}; filename="${filename}"`);
     return res.sendFile(filePath);
   } catch (error) {
     console.error("❌ Erreur service VISA generated:", error);
@@ -3826,6 +4053,51 @@ function buildVisaPdfUrl(filename) {
 function buildVisaGeneratedUrl(filename) {
   const baseUrl = process.env.BACKEND_URL || `https://backend-rh.azurewebsites.net`;
   return `${baseUrl}/api/visa-generated/${filename}`;
+}
+
+function parseVisaStoredFiles(fileUrl, originalFilename) {
+  if (!fileUrl) return [];
+
+  try {
+    const parsed = JSON.parse(fileUrl);
+    if (Array.isArray(parsed)) {
+      return parsed;
+    }
+  } catch (e) {
+    // Fallback for legacy single-file values
+  }
+
+  if (typeof fileUrl === "string" && fileUrl.trim()) {
+    return [
+      {
+        url: fileUrl,
+        originalFilename: originalFilename || "fichier.pdf",
+        filename: path.basename(fileUrl),
+      },
+    ];
+  }
+
+  return [];
+}
+
+function deleteVisaPdfFiles(files) {
+  for (const file of files || []) {
+    try {
+      const filename = path.basename(file?.filename || file?.url || "");
+      if (!filename) continue;
+
+      const filePath = path.join(visaPdfDir, filename);
+      const resolved = path.resolve(filePath);
+      const resolvedDir = path.resolve(visaPdfDir);
+
+      if (!resolved.startsWith(resolvedDir)) continue;
+      if (fs.existsSync(resolved)) {
+        fs.unlinkSync(resolved);
+      }
+    } catch (e) {
+      console.warn(`âš ï¸ Impossible de supprimer un ancien PDF VISA: ${e.message}`);
+    }
+  }
 }
 
 // ==================================================
@@ -4056,18 +4328,72 @@ async function saveGeneratedDocxAndUpdateDoc({ buffer, filename, docId }) {
   fs.writeFileSync(outPath, buffer);
 
   const fileUrl = buildVisaGeneratedUrl(filename);
+  const existingDoc = await pool.query(
+    `SELECT statut
+     FROM visa_documents
+     WHERE id = $1`,
+    [docId]
+  );
+
+  if (!existingDoc.rows.length) {
+    throw new Error("Document VISA introuvable");
+  }
+
+  const nextStatus = existingDoc.rows[0].statut === "RECEIVED_PHYSICAL" ? "RECEIVED_PHYSICAL" : "GENERATED";
 
   await pool.query(
     `UPDATE visa_documents
-     SET statut = 'UPLOADED',
-         file_url = $1,
-         original_filename = $2,
+     SET statut = $1,
+         file_url = $2,
+         original_filename = $3,
          updated_at = now()
-     WHERE id = $3`,
-    [fileUrl, filename, docId]
+     WHERE id = $4`,
+    [nextStatus, fileUrl, filename, docId]
   );
 
   return { fileUrl };
+}
+
+function isPdfReference(fileUrl, originalFilename) {
+  return /\.pdf($|\?)/i.test(String(fileUrl || "")) || /\.pdf$/i.test(String(originalFilename || ""));
+}
+
+async function saveGeneratedInvitationDocAndUpdateDoc({ buffer, filename, docId }) {
+  const outPath = path.join(visaGeneratedDir, filename);
+  fs.writeFileSync(outPath, buffer);
+
+  const generatedFileUrl = buildVisaGeneratedUrl(filename);
+  const existingDoc = await pool.query(
+    `SELECT file_url, original_filename, statut
+     FROM visa_documents
+     WHERE id = $1`,
+    [docId]
+  );
+
+  if (!existingDoc.rows.length) {
+    throw new Error("Document VISA introuvable");
+  }
+
+  const current = existingDoc.rows[0];
+  const signedFileUrl = isPdfReference(current.file_url, current.original_filename) ? current.file_url : null;
+  const signedOriginalFilename = isPdfReference(current.file_url, current.original_filename)
+    ? current.original_filename
+    : null;
+  const nextStatus = current.statut === "RECEIVED_PHYSICAL" ? "RECEIVED_PHYSICAL" : "GENERATED";
+
+  await pool.query(
+    `UPDATE visa_documents
+     SET generated_file_url = $1,
+         generated_original_filename = $2,
+         file_url = $3,
+         original_filename = $4,
+         statut = $5,
+         updated_at = now()
+     WHERE id = $6`,
+    [generatedFileUrl, filename, signedFileUrl, signedOriginalFilename, nextStatus, docId]
+  );
+
+  return { generatedFileUrl };
 }
 
 // ==================================================
@@ -4095,7 +4421,7 @@ app.get("/api/employee", authenticateToken, async (req, res) => {
 // ==================================================
 
 // Liste dossiers VISA
-app.get("/api/visa-dossiers", authenticateToken, async (req, res) => {
+app.get("/api/visa-dossiers", authenticateToken, requireTunisiaTenant, async (req, res) => {
   try {
     const result = await pool.query(`
       SELECT 
@@ -4104,6 +4430,7 @@ app.get("/api/visa-dossiers", authenticateToken, async (req, res) => {
         d.date_depart,
         d.date_retour,
         d.motif_deplacement,
+        d.destination,
         d.statut,
         d.numero_visa,
         d.visa_date_debut,
@@ -4116,8 +4443,8 @@ app.get("/api/visa-dossiers", authenticateToken, async (req, res) => {
         COUNT(vd.id)::int AS total_docs,
         COALESCE(SUM(
           CASE
-            WHEN vd.mode = 'UPLOAD'  AND vd.statut = 'UPLOADED' THEN 1
-            WHEN vd.mode = 'PHYSICAL' AND vd.statut = 'RECEIVED_PHYSICAL' THEN 1
+            WHEN vd.statut = 'RECEIVED_PHYSICAL' THEN 1
+            WHEN vd.mode = 'UPLOAD' AND vd.statut = 'UPLOADED' THEN 1
             ELSE 0
           END
         ), 0)::int AS ok_docs
@@ -4144,6 +4471,7 @@ app.get("/api/visa-dossiers", authenticateToken, async (req, res) => {
         departureDate: r.date_depart,
         returnDate: r.date_retour,
         motif: r.motif_deplacement,
+        destination: r.destination,
         status: r.statut,
         visa: {
           numero: r.numero_visa,
@@ -4164,7 +4492,7 @@ app.get("/api/visa-dossiers", authenticateToken, async (req, res) => {
 });
 
 // Dossier VISA détail
-app.get("/api/visa-dossiers/:id", authenticateToken, async (req, res) => {
+app.get("/api/visa-dossiers/:id", authenticateToken, requireTunisiaTenant, async (req, res) => {
   const dossierId = Number(req.params.id);
   try {
     const dRes = await pool.query(
@@ -4197,6 +4525,7 @@ app.get("/api/visa-dossiers/:id", authenticateToken, async (req, res) => {
       departureDate: r.date_depart,
       returnDate: r.date_retour,
       motif: r.motif_deplacement,
+      destination: r.destination,
       status: r.statut,
       documents: docsRes.rows.map((d) => ({
         id: d.id,
@@ -4206,6 +4535,8 @@ app.get("/api/visa-dossiers/:id", authenticateToken, async (req, res) => {
         status: d.statut,
         fileUrl: d.file_url,
         originalFilename: d.original_filename,
+        generatedFileUrl: d.generated_file_url,
+        generatedOriginalFilename: d.generated_original_filename,
       })),
     };
 
@@ -4216,10 +4547,10 @@ app.get("/api/visa-dossiers/:id", authenticateToken, async (req, res) => {
 });
 
 // Créer dossier VISA + template + email employé
-app.post("/api/visa-dossiers", authenticateToken, async (req, res) => {
-  const { employeeId, motif, departureDate, returnDate } = req.body;
+app.post("/api/visa-dossiers", authenticateToken, requireTunisiaTenant, async (req, res) => {
+  const { employeeId, motif, departureDate, returnDate, destination } = req.body;
 
-  if (!employeeId || !motif || !departureDate || !returnDate) {
+  if (!employeeId || !motif || !departureDate || !returnDate || !destination) {
     return res.status(400).json({ message: "Champs manquants" });
   }
   if (returnDate < departureDate) {
@@ -4231,10 +4562,10 @@ app.post("/api/visa-dossiers", authenticateToken, async (req, res) => {
     await client.query("BEGIN");
 
     const dIns = await client.query(
-      `INSERT INTO visa_dossiers (employee_id, motif_deplacement, date_depart, date_retour)
-       VALUES ($1,$2,$3,$4)
+      `INSERT INTO visa_dossiers (employee_id, motif_deplacement, date_depart, date_retour, destination)
+       VALUES ($1,$2,$3,$4,$5)
        RETURNING id`,
-      [employeeId, motif, departureDate, returnDate]
+      [employeeId, motif, departureDate, returnDate, destination]
     );
     const dossierId = dIns.rows[0].id;
 
@@ -4273,37 +4604,88 @@ app.post("/api/visa-dossiers", authenticateToken, async (req, res) => {
   }
 });
 
-// Upload document VISA (PDF) — FormData field = pdfFile
+// Upload document VISA (PDF) — FormData field = pdfFile (single) or pdfFiles (multiple for FICHES_PAIE)
 app.post(
   "/api/visa-documents/:id/upload",
   authenticateToken,
-  visaPdfUpload.single("pdfFile"),
+  requireTunisiaTenant,
+  visaPdfUpload.any(),
   async (req, res) => {
     const docId = Number(req.params.id);
 
     try {
-      if (!req.file) {
-        return res.status(400).json({ success: false, error: "Aucun fichier PDF uploadé" });
+      if (!req.files || req.files.length === 0) {
+        return res.status(400).json({ success: false, error: "Aucun fichier PDF téléchargé" });
       }
 
-      const fileUrl = buildVisaPdfUrl(req.file.filename);
-
-      await pool.query(
-        `UPDATE visa_documents
-         SET statut = 'UPLOADED',
-             file_url = $1,
-             original_filename = $2,
-             updated_at = now()
-         WHERE id = $3`,
-        [fileUrl, req.file.originalname, docId]
+      const docResult = await pool.query(
+        `SELECT code, file_url, original_filename
+         FROM visa_documents
+         WHERE id = $1`,
+        [docId]
       );
 
-      return res.json({
-        success: true,
-        fileUrl,
-        originalFilename: req.file.originalname,
-        filename: req.file.filename,
-      });
+      if (!docResult.rows.length) {
+        return res.status(404).json({ success: false, error: "Document non trouvé" });
+      }
+
+      const doc = docResult.rows[0];
+
+      if (doc.code === "FICHES_PAIE") {
+        const existingFiles = parseVisaStoredFiles(doc.file_url, doc.original_filename);
+
+        const newFiles = req.files.map((file) => ({
+          url: buildVisaPdfUrl(file.filename),
+          originalFilename: file.originalname,
+          filename: file.filename,
+        }));
+
+        const shouldReplaceExisting = existingFiles.length >= 3 || existingFiles.length + newFiles.length > 3;
+        if (shouldReplaceExisting) {
+          deleteVisaPdfFiles(existingFiles);
+        }
+
+        const filesArray = shouldReplaceExisting ? newFiles : [...existingFiles, ...newFiles];
+        const originalFilenames = filesArray.map((file) => file.originalFilename).join(", ");
+
+        await pool.query(
+          `UPDATE visa_documents
+           SET statut = 'UPLOADED',
+               file_url = $1,
+               original_filename = $2,
+               updated_at = now()
+           WHERE id = $3`,
+          [JSON.stringify(filesArray), originalFilenames, docId]
+        );
+
+        return res.json({
+          success: true,
+          fileUrl: JSON.stringify(filesArray),
+          originalFilename: originalFilenames,
+          files: filesArray,
+        });
+      } else {
+        // Pour fichier unique
+        const file = req.files[0];
+        const fileUrl = buildVisaPdfUrl(file.filename);
+
+        await pool.query(
+          `UPDATE visa_documents
+           SET statut = 'UPLOADED',
+               file_url = $1,
+               original_filename = $2,
+               updated_at = now()
+           WHERE id = $3`,
+          [fileUrl, file.originalname, docId]
+        );
+
+        return res.json({
+          success: true,
+          fileUrl,
+          originalFilename: file.originalname,
+          filename: file.filename,
+        });
+      }
     } catch (err) {
       console.error("❌ upload visa doc error:", err);
       return res.status(500).json({ message: err.message });
@@ -4312,7 +4694,7 @@ app.post(
 );
 
 // Mettre à jour doc (statut / url)
-app.patch("/api/visa-documents/:id", authenticateToken, async (req, res) => {
+app.patch("/api/visa-documents/:id", authenticateToken, requireTunisiaTenant, async (req, res) => {
   const docId = Number(req.params.id);
   const { status, fileUrl, originalFilename } = req.body;
 
@@ -4335,7 +4717,7 @@ app.patch("/api/visa-documents/:id", authenticateToken, async (req, res) => {
 });
 
 // Envoyer mail assurance
-app.post("/api/email/assurance", authenticateToken, async (req, res) => {
+app.post("/api/email/assurance", authenticateToken, requireTunisiaTenant, async (req, res) => {
   try {
     const { dossierId } = req.body;
     if (!dossierId) return res.status(400).json({ message: "dossierId obligatoire" });
@@ -4355,7 +4737,7 @@ app.post("/api/email/assurance", authenticateToken, async (req, res) => {
 });
 
 // Envoyer mail billet
-app.post("/api/email/billet", authenticateToken, async (req, res) => {
+app.post("/api/email/billet", authenticateToken, requireTunisiaTenant, async (req, res) => {
   try {
     const { dossierId } = req.body;
     if (!dossierId) return res.status(400).json({ message: "dossierId obligatoire" });
@@ -4375,7 +4757,7 @@ app.post("/api/email/billet", authenticateToken, async (req, res) => {
 });
 
 // Changer statut dossier VISA
-app.patch("/api/visa-dossiers/:id/status", authenticateToken, async (req, res) => {
+app.patch("/api/visa-dossiers/:id/status", authenticateToken, requireTunisiaTenant, async (req, res) => {
   const dossierId = Number(req.params.id);
   const { status, visaNumero, visaDateDebut, visaDateFin } = req.body;
 
@@ -4398,7 +4780,7 @@ app.patch("/api/visa-dossiers/:id/status", authenticateToken, async (req, res) =
   }
 });
 // DELETE dossier VISA (abandonner)
-app.delete("/api/visa-dossiers/:id", authenticateToken, async (req, res) => {
+app.delete("/api/visa-dossiers/:id", authenticateToken, requireTunisiaTenant, async (req, res) => {
   const dossierId = Number(req.params.id);
   const client = await pool.connect();
   
@@ -4435,7 +4817,7 @@ app.delete("/api/visa-dossiers/:id", authenticateToken, async (req, res) => {
     
     // Get all documents to clean up PDF files
     const docsResult = await client.query(
-      `SELECT file_url FROM visa_documents WHERE dossier_id = $1`,
+      `SELECT file_url, generated_file_url FROM visa_documents WHERE dossier_id = $1`,
       [dossierId]
     );
     
@@ -4490,7 +4872,7 @@ app.delete("/api/visa-dossiers/:id", authenticateToken, async (req, res) => {
 // ==================================================
 
 // Générer attestation de travail (DOCX)
-app.post("/api/attestation-travail", authenticateToken, async (req, res) => {
+app.post("/api/attestation-travail", authenticateToken, requireTunisiaTenant, async (req, res) => {
   const { employeId, docId } = req.body;
   if (!employeId || !docId) return res.status(400).json({ message: "employeId et docId obligatoires" });
 
@@ -4528,7 +4910,7 @@ app.post("/api/attestation-travail", authenticateToken, async (req, res) => {
 });
 
 // Générer invitation + prise en charge (DOCX)
-app.post("/api/invitation-prise-en-charge", authenticateToken, async (req, res) => {
+app.post("/api/invitation-prise-en-charge", authenticateToken, requireTunisiaTenant, async (req, res) => {
   const { employeId, dateDebutSejour, dateFinSejour, docId } = req.body;
   if (!employeId || !dateDebutSejour || !dateFinSejour || !docId) {
     return res.status(400).json({ message: "employeId, dates, docId obligatoires" });
@@ -4558,20 +4940,20 @@ app.post("/api/invitation-prise-en-charge", authenticateToken, async (req, res) 
       nomComplet
     );
 
-    const { fileUrl } = await saveGeneratedDocxAndUpdateDoc({
+    const { generatedFileUrl } = await saveGeneratedInvitationDocAndUpdateDoc({
       buffer: docxResult.buffer,
       filename: docxResult.filename,
       docId,
     });
 
-    res.json({ fileUrl, filename: docxResult.filename });
+    res.json({ generatedFileUrl, fileUrl: generatedFileUrl, filename: docxResult.filename });
   } catch (err) {
     res.status(500).json({ message: err.message });
   }
 });
 
 // Générer ordre de mission (DOCX)
-app.post("/api/ordre-mission", authenticateToken, async (req, res) => {
+app.post("/api/ordre-mission", authenticateToken, requireTunisiaTenant, async (req, res) => {
   const { employeId, objectifMission, dateDebutMission, dateFinMission, docId } = req.body;
   if (!employeId || !objectifMission || !dateDebutMission || !dateFinMission || !docId) {
     return res.status(400).json({ message: "champs obligatoires manquants" });
@@ -4609,103 +4991,6 @@ app.post("/api/ordre-mission", authenticateToken, async (req, res) => {
     res.json({ fileUrl, filename: docxResult.filename });
   } catch (err) {
     res.status(500).json({ message: err.message });
-  }
-});
-
-// --------------------------------------------------
-// PDF COMPLET DOSSIER VISA (fusion des PDF seulement)
-// --------------------------------------------------
-app.get("/api/visa-dossiers/:id/dossier-pdf", async (req, res) => {
-  const dossierId = Number(req.params.id);
-
-  try {
-    const dossierRes = await pool.query(
-      `SELECT e.prenom, e.nom
-       FROM visa_dossiers d
-       JOIN employees e ON e.id = d.employee_id
-       WHERE d.id = $1`,
-      [dossierId]
-    );
-
-    if (!dossierRes.rows.length) {
-      return res.status(404).json({ message: "Dossier introuvable" });
-    }
-
-    const { prenom, nom } = dossierRes.rows[0];
-
-    const docsRes = await pool.query(
-      `SELECT file_url
-       FROM visa_documents
-       WHERE dossier_id = $1
-         AND statut = 'UPLOADED'
-         AND file_url IS NOT NULL
-       ORDER BY id ASC`,
-      [dossierId]
-    );
-
-    const docs = docsRes.rows.filter((d) =>
-      String(d.file_url).toLowerCase().endsWith(".pdf")
-    );
-
-    if (!docs.length) {
-      return res.status(400).json({
-        message: "Aucun document PDF uploadé à fusionner pour ce dossier.",
-      });
-    }
-
-    const mergedPdf = await PDFDocument.create();
-
-    function fileUrlToLocalPath(fileUrl) {
-      let pathname = fileUrl;
-      if (fileUrl.startsWith("http")) {
-        pathname = decodeURIComponent(new URL(fileUrl).pathname);
-      }
-
-      const prefix = "/api/visa-pdfs/";
-      if (!pathname.startsWith(prefix)) {
-        throw new Error(`file_url invalide (doit commencer par ${prefix})`);
-      }
-
-      const filename = pathname.replace(prefix, "");
-      const localPath = path.join(visaPdfDir, filename);
-
-      const resolved = path.resolve(localPath);
-      const resolvedDir = path.resolve(visaPdfDir);
-      if (!resolved.startsWith(resolvedDir)) {
-        throw new Error("Chemin fichier non autorisé");
-      }
-      return resolved;
-    }
-
-    for (const d of docs) {
-      const localPath = fileUrlToLocalPath(d.file_url);
-
-      if (!fs.existsSync(localPath)) {
-        throw new Error(`Fichier introuvable : ${localPath}`);
-      }
-
-      const pdfBytes = fs.readFileSync(localPath);
-      const pdf = await PDFDocument.load(pdfBytes);
-
-      const pages = await mergedPdf.copyPages(pdf, pdf.getPageIndices());
-      pages.forEach((p) => mergedPdf.addPage(p));
-    }
-
-    const finalPdf = await mergedPdf.save();
-
-    const employeePart = safeFilename(`${prenom}_${nom}`);
-    const datePart = new Date().toISOString().slice(0, 10);
-    const filename = `Dossier_Visa_${employeePart}_${datePart}.pdf`;
-
-    res.setHeader("Content-Type", "application/pdf");
-    res.setHeader("Content-Disposition", `inline; filename="${filename}"`);
-
-    return res.send(Buffer.from(finalPdf));
-  } catch (err) {
-    console.error("❌ dossier-pdf error:", err);
-    return res.status(500).json({
-      message: err.message || "Erreur génération PDF du dossier",
-    });
   }
 });
 
