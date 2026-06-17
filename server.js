@@ -23,6 +23,8 @@ const SMTP_HOST = "avocarbon-com.mail.protection.outlook.com";
 const SMTP_PORT = 25;
 const EMAIL_FROM_NAME = "Administration STS";
 const EMAIL_FROM = "administration.STS@avocarbon.com";
+const RH_ADMIN_EMAIL = "nesria.ibrahim@avocarbon.com";
+const DEMANDE_STATUS_ANNULEE = "annulee";
 
 console.log('📧 Configuration SMTP Outlook:', {
   host: SMTP_HOST,
@@ -322,6 +324,18 @@ pool.on('error', err => {
   console.error('❌ Erreur inattendue du pool PostgreSQL:', err);
 });
 
+async function ensureVisaGeneratedColumns() {
+  try {
+    await pool.query(`ALTER TABLE visa_documents ADD COLUMN IF NOT EXISTS generated_file_url TEXT`);
+    await pool.query(`ALTER TABLE visa_documents ADD COLUMN IF NOT EXISTS generated_original_filename TEXT`);
+    console.log("âœ… Colonnes VISA generated prÃªtes");
+  } catch (err) {
+    console.error("âŒ Erreur ajout colonnes VISA generated:", err.message);
+  }
+}
+
+ensureVisaGeneratedColumns();
+
 // =========================
 // Middleware d'authentification
 // =========================
@@ -441,6 +455,203 @@ async function sendEmail(to, subject, html) {
     });
     throw error;
   }
+}
+
+// Utilitaires demandes RH
+function escapeHtml(value) {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function getDemandeTypeLabel(typeDemande) {
+  if (typeDemande === 'conges' || typeDemande === 'congé') return 'Congé';
+  if (typeDemande === 'autorisation' || typeDemande === 'autorisation_absence') return 'Autorisation';
+  if (typeDemande === 'mission') return 'Mission';
+  return typeDemande || 'Demande RH';
+}
+
+function getDemandeCancelToken(demandeId) {
+  const signature = crypto
+    .createHmac('sha256', JWT_SECRET)
+    .update(`cancel-demande-rh:${demandeId}`)
+    .digest('hex');
+
+  return `${demandeId}.${signature}`;
+}
+
+function isValidDemandeCancelToken(demandeId, token) {
+  const [tokenDemandeId, signature] = String(token || '').split('.');
+  if (tokenDemandeId !== String(demandeId) || !signature || !/^[a-f0-9]{64}$/i.test(signature)) {
+    return false;
+  }
+
+  const expectedSignature = getDemandeCancelToken(demandeId).split('.')[1];
+  const received = Buffer.from(signature, 'hex');
+  const expected = Buffer.from(expectedSignature, 'hex');
+
+  return received.length === expected.length && crypto.timingSafeEqual(received, expected);
+}
+
+function getBackendPublicUrl(req) {
+  if (process.env.BACKEND_PUBLIC_URL) {
+    return process.env.BACKEND_PUBLIC_URL.replace(/\/+$/, '');
+  }
+
+  const forwardedProto = req.get('x-forwarded-proto')?.split(',')[0]?.trim();
+  const forwardedHost = req.get('x-forwarded-host')?.split(',')[0]?.trim();
+  const protocol = forwardedProto || (process.env.NODE_ENV === 'production' ? 'https' : req.protocol);
+  const host = forwardedHost || req.get('host');
+
+  return `${protocol}://${host}`.replace(/\/+$/, '');
+}
+
+function getDemandeCancelUrl(req, demandeId) {
+  const token = getDemandeCancelToken(demandeId);
+  return `${getBackendPublicUrl(req)}/api/demandes/${encodeURIComponent(demandeId)}/annuler?token=${encodeURIComponent(token)}`;
+}
+
+function getDemandeEndDate(demande) {
+  const rawDate = demande?.date_retour || demande?.date_depart;
+  if (!rawDate) return null;
+
+  const date = new Date(rawDate);
+  if (isNaN(date.getTime())) return null;
+
+  date.setHours(0, 0, 0, 0);
+  return date;
+}
+
+function isDemandeCancellationAllowed(demande) {
+  if (!demande || demande.statut !== 'approuve') return false;
+
+  const endDate = getDemandeEndDate(demande);
+  if (!endDate) return false;
+
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+
+  return endDate >= today;
+}
+
+function getDemandeCancellationBlockReason(demande) {
+  if (!demande) return 'Demande introuvable.';
+  if (demande.statut === DEMANDE_STATUS_ANNULEE) return 'Cette demande est déjà annulée.';
+  if (demande.statut !== 'approuve') return `Cette demande ne peut pas être annulée car son statut actuel est "${demande.statut}".`;
+  if (!isDemandeCancellationAllowed(demande)) return 'Cette demande ne peut plus être annulée car sa période est déjà passée.';
+  return null;
+}
+
+function renderDemandeCancellationPage({ title, message, details = '', actionHtml = '', status = 200, color = '#2563eb' }) {
+  return {
+    status,
+    html: `
+      <!DOCTYPE html>
+      <html lang="fr">
+      <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>${escapeHtml(title)}</title>
+        <style>
+          body { font-family: Arial, sans-serif; background: #f8fafc; color: #111827; margin: 0; padding: 32px 16px; }
+          .card { max-width: 640px; margin: 0 auto; background: white; border: 1px solid #e5e7eb; border-radius: 12px; box-shadow: 0 12px 30px rgba(15, 23, 42, 0.08); overflow: hidden; }
+          .header { background: ${color}; color: white; padding: 24px; }
+          .header h1 { margin: 0; font-size: 24px; }
+          .content { padding: 24px; line-height: 1.6; }
+          .details { background: #f3f4f6; border-radius: 8px; padding: 16px; margin: 20px 0; }
+          .details p { margin: 6px 0; }
+          .actions { display: flex; gap: 12px; flex-wrap: wrap; margin-top: 24px; }
+          button, .link-button { border: 0; border-radius: 8px; padding: 12px 18px; font-weight: 700; cursor: pointer; text-decoration: none; display: inline-block; }
+          .danger { background: #dc2626; color: white; }
+          .secondary { background: #e5e7eb; color: #111827; }
+          .footer { color: #6b7280; font-size: 13px; margin-top: 20px; }
+        </style>
+      </head>
+      <body>
+        <div class="card">
+          <div class="header"><h1>${escapeHtml(title)}</h1></div>
+          <div class="content">
+            <p>${escapeHtml(message)}</p>
+            ${details}
+            ${actionHtml}
+            <p class="footer">Ce lien est sécurisé et ne permet d'annuler que la demande concernée.</p>
+          </div>
+        </div>
+      </body>
+      </html>
+    `
+  };
+}
+
+function getDemandeDetailsHtml(demande) {
+  return `
+    <div class="details">
+      <p><strong>Employé :</strong> ${escapeHtml(`${demande.prenom || ''} ${demande.nom || ''}`.trim())}</p>
+      <p><strong>Type :</strong> ${escapeHtml(getDemandeTypeLabel(demande.type_demande))}</p>
+      <p><strong>Motif :</strong> ${escapeHtml(demande.titre)}</p>
+      <p><strong>Date de départ :</strong> ${escapeHtml(formatDateShortApp(demande.date_depart))}</p>
+      ${demande.date_retour ? `<p><strong>Date de retour :</strong> ${escapeHtml(formatDateShortApp(demande.date_retour))}</p>` : ''}
+      ${demande.heure_depart ? `<p><strong>Heure de départ :</strong> ${escapeHtml(demande.heure_depart)}</p>` : ''}
+      ${demande.heure_retour ? `<p><strong>Heure de retour :</strong> ${escapeHtml(demande.heure_retour)}</p>` : ''}
+    </div>
+  `;
+}
+
+function getDemandeCancellationRecipients(demande) {
+  const recipients = [
+    RH_ADMIN_EMAIL,
+    demande.mail_responsable1,
+    demande.mail_responsable2
+  ];
+
+  return [...new Set(recipients.filter(email => email && isValidEmail(email)))];
+}
+
+async function sendDemandeCancellationNotification(demande) {
+  const recipients = getDemandeCancellationRecipients(demande);
+  const typeLabel = getDemandeTypeLabel(demande.type_demande);
+  const employeeName = `${demande.prenom || ''} ${demande.nom || ''}`.trim();
+
+  const html = `
+    <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+      <h2 style="color: #dc2626; border-bottom: 3px solid #dc2626; padding-bottom: 10px;">
+        Demande RH annulée
+      </h2>
+      <div style="background: #fef2f2; padding: 20px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #dc2626;">
+        <p>Une demande RH approuvée vient d'être annulée par l'employé.</p>
+      </div>
+      <div style="background: #f8fafc; padding: 20px; border-radius: 8px; margin: 20px 0;">
+        <p><strong>Employé :</strong> ${escapeHtml(employeeName)}</p>
+        <p><strong>Matricule :</strong> ${escapeHtml(demande.matricule || 'Non spécifié')}</p>
+        <p><strong>Type :</strong> ${escapeHtml(typeLabel)}</p>
+        <p><strong>Motif :</strong> ${escapeHtml(demande.titre)}</p>
+        <p><strong>Date de départ :</strong> ${escapeHtml(formatDateShortApp(demande.date_depart))}</p>
+        ${demande.date_retour ? `<p><strong>Date de retour :</strong> ${escapeHtml(formatDateShortApp(demande.date_retour))}</p>` : ''}
+        ${demande.heure_depart ? `<p><strong>Heure de départ :</strong> ${escapeHtml(demande.heure_depart)}</p>` : ''}
+        ${demande.heure_retour ? `<p><strong>Heure de retour :</strong> ${escapeHtml(demande.heure_retour)}</p>` : ''}
+      </div>
+      <p style="color: #6b7280; font-size: 14px;">Le statut de la demande est maintenant : Demande annulée.</p>
+    </div>
+  `;
+
+  await sendEmail(recipients, `Demande RH annulée - ${employeeName}`, html);
+}
+
+async function getDemandeCancellationContext(id) {
+  const result = await pool.query(
+    `SELECT d.*,
+            e.nom, e.prenom, e.adresse_mail, e.poste, e.matricule,
+            e.mail_responsable1, e.mail_responsable2
+     FROM demande_rh d
+     JOIN employees e ON d.employe_id = e.id
+     WHERE d.id = $1`,
+    [id]
+  );
+
+  return result.rows[0] || null;
 }
 
 // Fonction pour vérifier et envoyer les alertes de fin de contrat
@@ -3798,6 +4009,7 @@ app.get("/api/visa-generated/:filename", (req, res) => {
   try {
     const filename = path.basename(req.params.filename);
     const filePath = path.join(visaGeneratedDir, filename);
+    const dispositionType = req.query.download === "1" ? "attachment" : "inline";
 
     if (!fs.existsSync(filePath)) {
       return res.status(404).json({ error: "Fichier VISA généré introuvable" });
@@ -3810,7 +4022,7 @@ app.get("/api/visa-generated/:filename", (req, res) => {
         : "application/octet-stream";
 
     res.setHeader("Content-Type", contentType);
-    res.setHeader("Content-Disposition", `inline; filename="${filename}"`);
+    res.setHeader("Content-Disposition", `${dispositionType}; filename="${filename}"`);
     return res.sendFile(filePath);
   } catch (error) {
     console.error("❌ Erreur service VISA generated:", error);
@@ -3826,6 +4038,51 @@ function buildVisaPdfUrl(filename) {
 function buildVisaGeneratedUrl(filename) {
   const baseUrl = process.env.BACKEND_URL || `https://backend-rh.azurewebsites.net`;
   return `${baseUrl}/api/visa-generated/${filename}`;
+}
+
+function parseVisaStoredFiles(fileUrl, originalFilename) {
+  if (!fileUrl) return [];
+
+  try {
+    const parsed = JSON.parse(fileUrl);
+    if (Array.isArray(parsed)) {
+      return parsed;
+    }
+  } catch (e) {
+    // Fallback for legacy single-file values
+  }
+
+  if (typeof fileUrl === "string" && fileUrl.trim()) {
+    return [
+      {
+        url: fileUrl,
+        originalFilename: originalFilename || "fichier.pdf",
+        filename: path.basename(fileUrl),
+      },
+    ];
+  }
+
+  return [];
+}
+
+function deleteVisaPdfFiles(files) {
+  for (const file of files || []) {
+    try {
+      const filename = path.basename(file?.filename || file?.url || "");
+      if (!filename) continue;
+
+      const filePath = path.join(visaPdfDir, filename);
+      const resolved = path.resolve(filePath);
+      const resolvedDir = path.resolve(visaPdfDir);
+
+      if (!resolved.startsWith(resolvedDir)) continue;
+      if (fs.existsSync(resolved)) {
+        fs.unlinkSync(resolved);
+      }
+    } catch (e) {
+      console.warn(`âš ï¸ Impossible de supprimer un ancien PDF VISA: ${e.message}`);
+    }
+  }
 }
 
 // ==================================================
@@ -4056,18 +4313,72 @@ async function saveGeneratedDocxAndUpdateDoc({ buffer, filename, docId }) {
   fs.writeFileSync(outPath, buffer);
 
   const fileUrl = buildVisaGeneratedUrl(filename);
+  const existingDoc = await pool.query(
+    `SELECT statut
+     FROM visa_documents
+     WHERE id = $1`,
+    [docId]
+  );
+
+  if (!existingDoc.rows.length) {
+    throw new Error("Document VISA introuvable");
+  }
+
+  const nextStatus = existingDoc.rows[0].statut === "RECEIVED_PHYSICAL" ? "RECEIVED_PHYSICAL" : "GENERATED";
 
   await pool.query(
     `UPDATE visa_documents
-     SET statut = 'UPLOADED',
-         file_url = $1,
-         original_filename = $2,
+     SET statut = $1,
+         file_url = $2,
+         original_filename = $3,
          updated_at = now()
-     WHERE id = $3`,
-    [fileUrl, filename, docId]
+     WHERE id = $4`,
+    [nextStatus, fileUrl, filename, docId]
   );
 
   return { fileUrl };
+}
+
+function isPdfReference(fileUrl, originalFilename) {
+  return /\.pdf($|\?)/i.test(String(fileUrl || "")) || /\.pdf$/i.test(String(originalFilename || ""));
+}
+
+async function saveGeneratedInvitationDocAndUpdateDoc({ buffer, filename, docId }) {
+  const outPath = path.join(visaGeneratedDir, filename);
+  fs.writeFileSync(outPath, buffer);
+
+  const generatedFileUrl = buildVisaGeneratedUrl(filename);
+  const existingDoc = await pool.query(
+    `SELECT file_url, original_filename, statut
+     FROM visa_documents
+     WHERE id = $1`,
+    [docId]
+  );
+
+  if (!existingDoc.rows.length) {
+    throw new Error("Document VISA introuvable");
+  }
+
+  const current = existingDoc.rows[0];
+  const signedFileUrl = isPdfReference(current.file_url, current.original_filename) ? current.file_url : null;
+  const signedOriginalFilename = isPdfReference(current.file_url, current.original_filename)
+    ? current.original_filename
+    : null;
+  const nextStatus = current.statut === "RECEIVED_PHYSICAL" ? "RECEIVED_PHYSICAL" : "GENERATED";
+
+  await pool.query(
+    `UPDATE visa_documents
+     SET generated_file_url = $1,
+         generated_original_filename = $2,
+         file_url = $3,
+         original_filename = $4,
+         statut = $5,
+         updated_at = now()
+     WHERE id = $6`,
+    [generatedFileUrl, filename, signedFileUrl, signedOriginalFilename, nextStatus, docId]
+  );
+
+  return { generatedFileUrl };
 }
 
 // ==================================================
@@ -4104,6 +4415,7 @@ app.get("/api/visa-dossiers", authenticateToken, async (req, res) => {
         d.date_depart,
         d.date_retour,
         d.motif_deplacement,
+        d.destination,
         d.statut,
         d.numero_visa,
         d.visa_date_debut,
@@ -4116,8 +4428,8 @@ app.get("/api/visa-dossiers", authenticateToken, async (req, res) => {
         COUNT(vd.id)::int AS total_docs,
         COALESCE(SUM(
           CASE
-            WHEN vd.mode = 'UPLOAD'  AND vd.statut = 'UPLOADED' THEN 1
-            WHEN vd.mode = 'PHYSICAL' AND vd.statut = 'RECEIVED_PHYSICAL' THEN 1
+            WHEN vd.statut = 'RECEIVED_PHYSICAL' THEN 1
+            WHEN vd.mode = 'UPLOAD' AND vd.statut = 'UPLOADED' THEN 1
             ELSE 0
           END
         ), 0)::int AS ok_docs
@@ -4144,6 +4456,7 @@ app.get("/api/visa-dossiers", authenticateToken, async (req, res) => {
         departureDate: r.date_depart,
         returnDate: r.date_retour,
         motif: r.motif_deplacement,
+        destination: r.destination,
         status: r.statut,
         visa: {
           numero: r.numero_visa,
@@ -4197,6 +4510,7 @@ app.get("/api/visa-dossiers/:id", authenticateToken, async (req, res) => {
       departureDate: r.date_depart,
       returnDate: r.date_retour,
       motif: r.motif_deplacement,
+      destination: r.destination,
       status: r.statut,
       documents: docsRes.rows.map((d) => ({
         id: d.id,
@@ -4206,6 +4520,8 @@ app.get("/api/visa-dossiers/:id", authenticateToken, async (req, res) => {
         status: d.statut,
         fileUrl: d.file_url,
         originalFilename: d.original_filename,
+        generatedFileUrl: d.generated_file_url,
+        generatedOriginalFilename: d.generated_original_filename,
       })),
     };
 
@@ -4217,9 +4533,9 @@ app.get("/api/visa-dossiers/:id", authenticateToken, async (req, res) => {
 
 // Créer dossier VISA + template + email employé
 app.post("/api/visa-dossiers", authenticateToken, async (req, res) => {
-  const { employeeId, motif, departureDate, returnDate } = req.body;
+  const { employeeId, motif, departureDate, returnDate, destination } = req.body;
 
-  if (!employeeId || !motif || !departureDate || !returnDate) {
+  if (!employeeId || !motif || !departureDate || !returnDate || !destination) {
     return res.status(400).json({ message: "Champs manquants" });
   }
   if (returnDate < departureDate) {
@@ -4231,10 +4547,10 @@ app.post("/api/visa-dossiers", authenticateToken, async (req, res) => {
     await client.query("BEGIN");
 
     const dIns = await client.query(
-      `INSERT INTO visa_dossiers (employee_id, motif_deplacement, date_depart, date_retour)
-       VALUES ($1,$2,$3,$4)
+      `INSERT INTO visa_dossiers (employee_id, motif_deplacement, date_depart, date_retour, destination)
+       VALUES ($1,$2,$3,$4,$5)
        RETURNING id`,
-      [employeeId, motif, departureDate, returnDate]
+      [employeeId, motif, departureDate, returnDate, destination]
     );
     const dossierId = dIns.rows[0].id;
 
@@ -4273,37 +4589,87 @@ app.post("/api/visa-dossiers", authenticateToken, async (req, res) => {
   }
 });
 
-// Upload document VISA (PDF) — FormData field = pdfFile
+// Upload document VISA (PDF) — FormData field = pdfFile (single) or pdfFiles (multiple for FICHES_PAIE)
 app.post(
   "/api/visa-documents/:id/upload",
   authenticateToken,
-  visaPdfUpload.single("pdfFile"),
+  visaPdfUpload.any(),
   async (req, res) => {
     const docId = Number(req.params.id);
 
     try {
-      if (!req.file) {
-        return res.status(400).json({ success: false, error: "Aucun fichier PDF uploadé" });
+      if (!req.files || req.files.length === 0) {
+        return res.status(400).json({ success: false, error: "Aucun fichier PDF téléchargé" });
       }
 
-      const fileUrl = buildVisaPdfUrl(req.file.filename);
-
-      await pool.query(
-        `UPDATE visa_documents
-         SET statut = 'UPLOADED',
-             file_url = $1,
-             original_filename = $2,
-             updated_at = now()
-         WHERE id = $3`,
-        [fileUrl, req.file.originalname, docId]
+      const docResult = await pool.query(
+        `SELECT code, file_url, original_filename
+         FROM visa_documents
+         WHERE id = $1`,
+        [docId]
       );
 
-      return res.json({
-        success: true,
-        fileUrl,
-        originalFilename: req.file.originalname,
-        filename: req.file.filename,
-      });
+      if (!docResult.rows.length) {
+        return res.status(404).json({ success: false, error: "Document non trouvé" });
+      }
+
+      const doc = docResult.rows[0];
+
+      if (doc.code === "FICHES_PAIE") {
+        const existingFiles = parseVisaStoredFiles(doc.file_url, doc.original_filename);
+
+        const newFiles = req.files.map((file) => ({
+          url: buildVisaPdfUrl(file.filename),
+          originalFilename: file.originalname,
+          filename: file.filename,
+        }));
+
+        const shouldReplaceExisting = existingFiles.length >= 3 || existingFiles.length + newFiles.length > 3;
+        if (shouldReplaceExisting) {
+          deleteVisaPdfFiles(existingFiles);
+        }
+
+        const filesArray = shouldReplaceExisting ? newFiles : [...existingFiles, ...newFiles];
+        const originalFilenames = filesArray.map((file) => file.originalFilename).join(", ");
+
+        await pool.query(
+          `UPDATE visa_documents
+           SET statut = 'UPLOADED',
+               file_url = $1,
+               original_filename = $2,
+               updated_at = now()
+           WHERE id = $3`,
+          [JSON.stringify(filesArray), originalFilenames, docId]
+        );
+
+        return res.json({
+          success: true,
+          fileUrl: JSON.stringify(filesArray),
+          originalFilename: originalFilenames,
+          files: filesArray,
+        });
+      } else {
+        // Pour fichier unique
+        const file = req.files[0];
+        const fileUrl = buildVisaPdfUrl(file.filename);
+
+        await pool.query(
+          `UPDATE visa_documents
+           SET statut = 'UPLOADED',
+               file_url = $1,
+               original_filename = $2,
+               updated_at = now()
+           WHERE id = $3`,
+          [fileUrl, file.originalname, docId]
+        );
+
+        return res.json({
+          success: true,
+          fileUrl,
+          originalFilename: file.originalname,
+          filename: file.filename,
+        });
+      }
     } catch (err) {
       console.error("❌ upload visa doc error:", err);
       return res.status(500).json({ message: err.message });
@@ -4435,7 +4801,7 @@ app.delete("/api/visa-dossiers/:id", authenticateToken, async (req, res) => {
     
     // Get all documents to clean up PDF files
     const docsResult = await client.query(
-      `SELECT file_url FROM visa_documents WHERE dossier_id = $1`,
+      `SELECT file_url, generated_file_url FROM visa_documents WHERE dossier_id = $1`,
       [dossierId]
     );
     
@@ -4558,13 +4924,13 @@ app.post("/api/invitation-prise-en-charge", authenticateToken, async (req, res) 
       nomComplet
     );
 
-    const { fileUrl } = await saveGeneratedDocxAndUpdateDoc({
+    const { generatedFileUrl } = await saveGeneratedInvitationDocAndUpdateDoc({
       buffer: docxResult.buffer,
       filename: docxResult.filename,
       docId,
     });
 
-    res.json({ fileUrl, filename: docxResult.filename });
+    res.json({ generatedFileUrl, fileUrl: generatedFileUrl, filename: docxResult.filename });
   } catch (err) {
     res.status(500).json({ message: err.message });
   }
@@ -4609,103 +4975,6 @@ app.post("/api/ordre-mission", authenticateToken, async (req, res) => {
     res.json({ fileUrl, filename: docxResult.filename });
   } catch (err) {
     res.status(500).json({ message: err.message });
-  }
-});
-
-// --------------------------------------------------
-// PDF COMPLET DOSSIER VISA (fusion des PDF seulement)
-// --------------------------------------------------
-app.get("/api/visa-dossiers/:id/dossier-pdf", async (req, res) => {
-  const dossierId = Number(req.params.id);
-
-  try {
-    const dossierRes = await pool.query(
-      `SELECT e.prenom, e.nom
-       FROM visa_dossiers d
-       JOIN employees e ON e.id = d.employee_id
-       WHERE d.id = $1`,
-      [dossierId]
-    );
-
-    if (!dossierRes.rows.length) {
-      return res.status(404).json({ message: "Dossier introuvable" });
-    }
-
-    const { prenom, nom } = dossierRes.rows[0];
-
-    const docsRes = await pool.query(
-      `SELECT file_url
-       FROM visa_documents
-       WHERE dossier_id = $1
-         AND statut = 'UPLOADED'
-         AND file_url IS NOT NULL
-       ORDER BY id ASC`,
-      [dossierId]
-    );
-
-    const docs = docsRes.rows.filter((d) =>
-      String(d.file_url).toLowerCase().endsWith(".pdf")
-    );
-
-    if (!docs.length) {
-      return res.status(400).json({
-        message: "Aucun document PDF uploadé à fusionner pour ce dossier.",
-      });
-    }
-
-    const mergedPdf = await PDFDocument.create();
-
-    function fileUrlToLocalPath(fileUrl) {
-      let pathname = fileUrl;
-      if (fileUrl.startsWith("http")) {
-        pathname = decodeURIComponent(new URL(fileUrl).pathname);
-      }
-
-      const prefix = "/api/visa-pdfs/";
-      if (!pathname.startsWith(prefix)) {
-        throw new Error(`file_url invalide (doit commencer par ${prefix})`);
-      }
-
-      const filename = pathname.replace(prefix, "");
-      const localPath = path.join(visaPdfDir, filename);
-
-      const resolved = path.resolve(localPath);
-      const resolvedDir = path.resolve(visaPdfDir);
-      if (!resolved.startsWith(resolvedDir)) {
-        throw new Error("Chemin fichier non autorisé");
-      }
-      return resolved;
-    }
-
-    for (const d of docs) {
-      const localPath = fileUrlToLocalPath(d.file_url);
-
-      if (!fs.existsSync(localPath)) {
-        throw new Error(`Fichier introuvable : ${localPath}`);
-      }
-
-      const pdfBytes = fs.readFileSync(localPath);
-      const pdf = await PDFDocument.load(pdfBytes);
-
-      const pages = await mergedPdf.copyPages(pdf, pdf.getPageIndices());
-      pages.forEach((p) => mergedPdf.addPage(p));
-    }
-
-    const finalPdf = await mergedPdf.save();
-
-    const employeePart = safeFilename(`${prenom}_${nom}`);
-    const datePart = new Date().toISOString().slice(0, 10);
-    const filename = `Dossier_Visa_${employeePart}_${datePart}.pdf`;
-
-    res.setHeader("Content-Type", "application/pdf");
-    res.setHeader("Content-Disposition", `inline; filename="${filename}"`);
-
-    return res.send(Buffer.from(finalPdf));
-  } catch (err) {
-    console.error("❌ dossier-pdf error:", err);
-    return res.status(500).json({
-      message: err.message || "Erreur génération PDF du dossier",
-    });
   }
 });
 
@@ -5103,6 +5372,7 @@ app.post('/api/demandes/:id/approuver-app', authenticateToken, async (req, res) 
     const result = await pool.query(
       `SELECT d.*, 
               e.nom, e.prenom, e.adresse_mail, e.poste, e.matricule,
+              e.mail_responsable1,
               e.mail_responsable2
        FROM demande_rh d
        JOIN employees e ON d.employe_id = e.id
@@ -5123,17 +5393,19 @@ app.post('/api/demandes/:id/approuver-app', authenticateToken, async (req, res) 
       });
     }
 
-    // ✅ FIX: if resp2 exists, stay en_attente until manager acts
-    const hasResp2 = !!demande.mail_responsable2;
-    const newStatut = hasResp2 ? 'en_attente' : 'approuve';
+    const hasResp1 = !!demande.mail_responsable1;
+    const approbationResponsable1 = demande.approuve_responsable1 === true;
+    const approbationResponsable2 = true;
+    const newStatut = !hasResp1 || approbationResponsable1 ? 'approuve' : 'en_attente';
 
     await pool.query(
       `UPDATE demande_rh 
        SET statut = $1, 
-           approuve_responsable1 = true,
+           approuve_responsable2 = $2,
+           approuve_responsable1 = $3,
            updated_at = CURRENT_TIMESTAMP 
-       WHERE id = $2`,
-      [newStatut, id]
+       WHERE id = $4`,
+      [newStatut, approbationResponsable2, approbationResponsable1, id]
     );
 
     const typeLabel =
@@ -5141,6 +5413,11 @@ app.post('/api/demandes/:id/approuver-app', authenticateToken, async (req, res) 
       demande.type_demande === 'autorisation' ? 'Autorisation' : 'Mission';
 
     const typeCongeLabel = getTypeCongeTextApp(demande.type_conge, demande.type_conge_autre);
+    const canCancelFromEmail = newStatut === 'approuve' && isDemandeCancellationAllowed({
+      ...demande,
+      statut: newStatut
+    });
+    const cancelUrl = canCancelFromEmail ? getDemandeCancelUrl(req, id) : null;
 
     // ... rest of your code continues unchanged
 
@@ -5165,6 +5442,16 @@ app.post('/api/demandes/:id/approuver-app', authenticateToken, async (req, res) 
           ${demande.heure_retour ? `<p><strong>Heure de retour :</strong> ${demande.heure_retour}</p>` : ''}
           ${demande.frais_deplacement ? `<p><strong>Frais de déplacement :</strong> ${demande.frais_deplacement} TND</p>` : ''}
         </div>
+        ${cancelUrl ? `
+          <div style="background: #fff7ed; padding: 20px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #f97316;">
+            <p style="margin-top: 0; color: #9a3412;">
+              Si cette demande n'est plus valable, vous pouvez l'annuler tant que la période n'est pas passée.
+            </p>
+            <a href="${cancelUrl}" style="display: inline-block; background: #dc2626; color: #ffffff; padding: 12px 18px; border-radius: 8px; text-decoration: none; font-weight: bold;">
+              Annuler la demande
+            </a>
+          </div>
+        ` : ''}
         <p style="color: #6b7280; font-size: 14px;">Si vous avez des questions, contactez le service RH.</p>
       </div>
     `;
@@ -5265,6 +5552,149 @@ app.post('/api/demandes/:id/approuver-app', authenticateToken, async (req, res) 
 
 // ─── REFUSER DEPUIS L'APP ──────────────────────────────────────────────────
 
+app.get('/api/demandes/:id/annuler', async (req, res) => {
+  const { id } = req.params;
+  const { token } = req.query;
+
+  try {
+    if (!isValidDemandeCancelToken(id, token)) {
+      const page = renderDemandeCancellationPage({
+        title: 'Lien invalide',
+        message: "Ce lien d'annulation est invalide.",
+        status: 403,
+        color: '#dc2626'
+      });
+      return res.status(page.status).send(page.html);
+    }
+
+    const demande = await getDemandeCancellationContext(id);
+    const blockReason = getDemandeCancellationBlockReason(demande);
+
+    if (blockReason) {
+      const page = renderDemandeCancellationPage({
+        title: 'Annulation impossible',
+        message: blockReason,
+        details: demande ? getDemandeDetailsHtml(demande) : '',
+        status: 400,
+        color: '#dc2626'
+      });
+      return res.status(page.status).send(page.html);
+    }
+
+    const confirmAction = `/api/demandes/${encodeURIComponent(id)}/annuler/confirm?token=${encodeURIComponent(token)}`;
+    const page = renderDemandeCancellationPage({
+      title: 'Confirmer l\'annulation',
+      message: 'Veuillez confirmer que vous souhaitez annuler cette demande RH approuvée.',
+      details: getDemandeDetailsHtml(demande),
+      actionHtml: `
+        <form method="POST" action="${escapeHtml(confirmAction)}" class="actions">
+          <button type="submit" class="danger">Confirmer l'annulation</button>
+          <a href="javascript:window.close();" class="link-button secondary">Fermer</a>
+        </form>
+      `,
+      color: '#f97316'
+    });
+
+    return res.status(page.status).send(page.html);
+  } catch (err) {
+    console.error('Erreur page annulation demande:', err);
+    const page = renderDemandeCancellationPage({
+      title: 'Erreur',
+      message: "Une erreur est survenue lors de la préparation de l'annulation.",
+      status: 500,
+      color: '#dc2626'
+    });
+    return res.status(page.status).send(page.html);
+  }
+});
+
+app.post('/api/demandes/:id/annuler/confirm', async (req, res) => {
+  const { id } = req.params;
+  const { token } = req.query;
+
+  try {
+    if (!isValidDemandeCancelToken(id, token)) {
+      const page = renderDemandeCancellationPage({
+        title: 'Lien invalide',
+        message: "Ce lien d'annulation est invalide.",
+        status: 403,
+        color: '#dc2626'
+      });
+      return res.status(page.status).send(page.html);
+    }
+
+    const demande = await getDemandeCancellationContext(id);
+    const blockReason = getDemandeCancellationBlockReason(demande);
+
+    if (blockReason) {
+      const page = renderDemandeCancellationPage({
+        title: 'Annulation impossible',
+        message: blockReason,
+        details: demande ? getDemandeDetailsHtml(demande) : '',
+        status: 400,
+        color: '#dc2626'
+      });
+      return res.status(page.status).send(page.html);
+    }
+
+    const updateResult = await pool.query(
+      `UPDATE demande_rh
+       SET statut = $1,
+           updated_at = CURRENT_TIMESTAMP
+       WHERE id = $2
+         AND statut = 'approuve'
+         AND COALESCE(date_retour, date_depart) >= CURRENT_DATE
+       RETURNING *`,
+      [DEMANDE_STATUS_ANNULEE, id]
+    );
+
+    if (updateResult.rows.length === 0) {
+      const refreshedDemande = await getDemandeCancellationContext(id);
+      const page = renderDemandeCancellationPage({
+        title: 'Annulation impossible',
+        message: getDemandeCancellationBlockReason(refreshedDemande) || "Cette demande ne peut plus être annulée.",
+        details: refreshedDemande ? getDemandeDetailsHtml(refreshedDemande) : '',
+        status: 400,
+        color: '#dc2626'
+      });
+      return res.status(page.status).send(page.html);
+    }
+
+    try {
+      await sendDemandeCancellationNotification({
+        ...demande,
+        ...updateResult.rows[0],
+        nom: demande.nom,
+        prenom: demande.prenom,
+        adresse_mail: demande.adresse_mail,
+        matricule: demande.matricule,
+        mail_responsable1: demande.mail_responsable1,
+        mail_responsable2: demande.mail_responsable2
+      });
+    } catch (emailErr) {
+      console.error('Erreur email notification annulation:', emailErr.message);
+    }
+
+    const page = renderDemandeCancellationPage({
+      title: 'Demande annulée',
+      message: 'Votre demande RH a été annulée avec succès. Le service RH et vos responsables ont été notifiés.',
+      details: getDemandeDetailsHtml({ ...demande, ...updateResult.rows[0], nom: demande.nom, prenom: demande.prenom }),
+      color: '#16a34a'
+    });
+
+    return res.status(page.status).send(page.html);
+  } catch (err) {
+    console.error('Erreur annulation demande:', err);
+    const page = renderDemandeCancellationPage({
+      title: 'Erreur',
+      message: "Une erreur est survenue lors de l'annulation de la demande.",
+      status: 500,
+      color: '#dc2626'
+    });
+    return res.status(page.status).send(page.html);
+  }
+});
+
 app.post('/api/demandes/:id/refuser-app', authenticateToken, async (req, res) => {
   const { id } = req.params;
   const { commentaire } = req.body;
@@ -5301,7 +5731,7 @@ app.post('/api/demandes/:id/refuser-app', authenticateToken, async (req, res) =>
     await pool.query(
       `UPDATE demande_rh 
        SET statut = 'refuse', 
-           approuve_responsable1 = false,
+           approuve_responsable2 = false,
            commentaire_refus = $1,
            updated_at = CURRENT_TIMESTAMP 
        WHERE id = $2`,
