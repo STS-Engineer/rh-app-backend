@@ -4745,8 +4745,8 @@ app.get("/api/visa-dossiers/:id", authenticateToken, requireTunisiaTenant, async
 });
 
 // Créer dossier VISA + template + email employé
-app.post("/api/visa-dossiers", authenticateToken, async (req, res) => {
-  const { employeeId, motif, departureDate, returnDate } = req.body;
+app.post("/api/visa-dossiers", authenticateToken, requireTunisiaTenant, async (req, res) => {
+  const { employeeId, motif, departureDate, returnDate, destination } = req.body;
 
   if (!employeeId || !motif || !departureDate || !returnDate || !destination) {
     return res.status(400).json({ message: "Champs manquants" });
@@ -4802,37 +4802,88 @@ app.post("/api/visa-dossiers", authenticateToken, async (req, res) => {
   }
 });
 
-// Upload document VISA (PDF) — FormData field = pdfFile
+// Upload document VISA (PDF) — FormData field = pdfFile (single) or pdfFiles (multiple for FICHES_PAIE)
 app.post(
   "/api/visa-documents/:id/upload",
   authenticateToken,
-  visaPdfUpload.single("pdfFile"),
+  requireTunisiaTenant,
+  visaPdfUpload.any(),
   async (req, res) => {
     const docId = Number(req.params.id);
 
     try {
-      if (!req.file) {
-        return res.status(400).json({ success: false, error: "Aucun fichier PDF uploadé" });
+      if (!req.files || req.files.length === 0) {
+        return res.status(400).json({ success: false, error: "Aucun fichier PDF téléchargé" });
       }
 
-      const fileUrl = buildVisaPdfUrl(req.file.filename);
-
-      await pool.query(
-        `UPDATE visa_documents
-         SET statut = 'UPLOADED',
-             file_url = $1,
-             original_filename = $2,
-             updated_at = now()
-         WHERE id = $3`,
-        [fileUrl, req.file.originalname, docId]
+      const docResult = await pool.query(
+        `SELECT code, file_url, original_filename
+         FROM visa_documents
+         WHERE id = $1`,
+        [docId]
       );
 
-      return res.json({
-        success: true,
-        fileUrl,
-        originalFilename: req.file.originalname,
-        filename: req.file.filename,
-      });
+      if (!docResult.rows.length) {
+        return res.status(404).json({ success: false, error: "Document non trouvé" });
+      }
+
+      const doc = docResult.rows[0];
+
+      if (doc.code === "FICHES_PAIE") {
+        const existingFiles = parseVisaStoredFiles(doc.file_url, doc.original_filename);
+
+        const newFiles = req.files.map((file) => ({
+          url: buildVisaPdfUrl(file.filename),
+          originalFilename: file.originalname,
+          filename: file.filename,
+        }));
+
+        const shouldReplaceExisting = existingFiles.length >= 3 || existingFiles.length + newFiles.length > 3;
+        if (shouldReplaceExisting) {
+          deleteVisaPdfFiles(existingFiles);
+        }
+
+        const filesArray = shouldReplaceExisting ? newFiles : [...existingFiles, ...newFiles];
+        const originalFilenames = filesArray.map((file) => file.originalFilename).join(", ");
+
+        await pool.query(
+          `UPDATE visa_documents
+           SET statut = 'UPLOADED',
+               file_url = $1,
+               original_filename = $2,
+               updated_at = now()
+           WHERE id = $3`,
+          [JSON.stringify(filesArray), originalFilenames, docId]
+        );
+
+        return res.json({
+          success: true,
+          fileUrl: JSON.stringify(filesArray),
+          originalFilename: originalFilenames,
+          files: filesArray,
+        });
+      } else {
+        // Pour fichier unique
+        const file = req.files[0];
+        const fileUrl = buildVisaPdfUrl(file.filename);
+
+        await pool.query(
+          `UPDATE visa_documents
+           SET statut = 'UPLOADED',
+               file_url = $1,
+               original_filename = $2,
+               updated_at = now()
+           WHERE id = $3`,
+          [fileUrl, file.originalname, docId]
+        );
+
+        return res.json({
+          success: true,
+          fileUrl,
+          originalFilename: file.originalname,
+          filename: file.filename,
+        });
+      }
     } catch (err) {
       console.error("❌ upload visa doc error:", err);
       return res.status(500).json({ message: err.message });
