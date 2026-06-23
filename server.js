@@ -469,6 +469,60 @@ function isValidEmail(email) {
   return emailRegex.test(email);
 }
 
+function normalizeEmailAddress(value) {
+  return String(value || '').trim().toLowerCase();
+}
+
+function resolveTunisiaDemandeApprover(demande, user) {
+  const currentEmail = normalizeEmailAddress(user?.email);
+  const responsable1Email = normalizeEmailAddress(demande?.mail_responsable1);
+  const responsable2Email = normalizeEmailAddress(demande?.mail_responsable2);
+  const role = String(user?.role || '').trim().toLowerCase();
+
+  if (currentEmail && responsable1Email && currentEmail === responsable1Email) {
+    return 'responsable1';
+  }
+
+  if (currentEmail && responsable2Email && currentEmail === responsable2Email) {
+    return 'responsable2';
+  }
+
+  if (!responsable2Email && responsable1Email && ['manager', 'responsable1'].includes(role)) {
+    return 'responsable1';
+  }
+
+  if (!responsable1Email && responsable2Email && role === 'responsable2') {
+    return 'responsable2';
+  }
+
+  return null;
+}
+
+function computeTunisiaDemandeStatus(demande, approverStates) {
+  const hasResponsable1 = !!normalizeEmailAddress(demande?.mail_responsable1);
+  const hasResponsable2 = !!normalizeEmailAddress(demande?.mail_responsable2);
+
+  if (approverStates.approuve_responsable1 === false || approverStates.approuve_responsable2 === false) {
+    return 'refuse';
+  }
+
+  if (hasResponsable1 && hasResponsable2) {
+    return approverStates.approuve_responsable1 === true && approverStates.approuve_responsable2 === true
+      ? 'approuve'
+      : 'en_attente';
+  }
+
+  if (hasResponsable1) {
+    return approverStates.approuve_responsable1 === true ? 'approuve' : 'en_attente';
+  }
+
+  if (hasResponsable2) {
+    return approverStates.approuve_responsable2 === true ? 'approuve' : 'en_attente';
+  }
+
+  return 'approuve';
+}
+
 function getDefaultAvatar(nom, prenom) {
   const initiales = (prenom.charAt(0) + nom.charAt(0)).toUpperCase();
   const colors = [
@@ -5599,6 +5653,7 @@ app.post('/api/demandes/:id/approuver-app', authenticateToken, async (req, res) 
     }
 
     const demande = result.rows[0];
+    const actingLevel = resolveTunisiaDemandeApprover(demande, req.user);
 
     if (demande.statut !== 'en_attente') {
       return res.status(400).json({
@@ -5607,31 +5662,64 @@ app.post('/api/demandes/:id/approuver-app', authenticateToken, async (req, res) 
       });
     }
 
-    // ✅ FIX: if resp2 exists, stay en_attente until manager acts
-    const hasResp1 = !!demande.mail_responsable1;
-    const approbationResponsable1 = demande.approuve_responsable1 === true;
-    const approbationResponsable2 = true;
-    const newStatut = !hasResp1 || approbationResponsable1 ? 'approuve' : 'en_attente';
+    if (!actingLevel) {
+      return res.status(403).json({
+        success: false,
+        error: 'Vous n’êtes pas autorisé à approuver cette demande.'
+      });
+    }
 
-    await pool.query(
+    const approverStates = {
+      approuve_responsable1: demande.approuve_responsable1,
+      approuve_responsable2: demande.approuve_responsable2
+    };
+
+    if (actingLevel === 'responsable1') {
+      approverStates.approuve_responsable1 = true;
+    } else {
+      approverStates.approuve_responsable2 = true;
+    }
+
+    const newStatut = computeTunisiaDemandeStatus(demande, approverStates);
+
+    const updateResult = await pool.query(
       `UPDATE demande_rh 
        SET statut = $1, 
            approuve_responsable2 = $2,
            approuve_responsable1 = $3,
            updated_at = CURRENT_TIMESTAMP 
-       WHERE id = $4`,
-      [newStatut, approbationResponsable2, approbationResponsable1, id]
+       WHERE id = $4
+       RETURNING *`,
+      [
+        newStatut,
+        approverStates.approuve_responsable2,
+        approverStates.approuve_responsable1,
+        id
+      ]
     );
+
+    const updatedDemande = {
+      ...demande,
+      ...updateResult.rows?.[0],
+      statut: newStatut,
+      approuve_responsable1: approverStates.approuve_responsable1,
+      approuve_responsable2: approverStates.approuve_responsable2
+    };
+
+    if (newStatut !== 'approuve') {
+      return res.json({
+        success: true,
+        message: 'Validation enregistrée. Demande en attente du second responsable.',
+        demande: updatedDemande
+      });
+    }
 
     const typeLabel =
       demande.type_demande === 'conges' ? 'Congé' :
       demande.type_demande === 'autorisation' ? 'Autorisation' : 'Mission';
 
     const typeCongeLabel = getTypeCongeTextApp(demande.type_conge, demande.type_conge_autre);
-    const canCancelFromEmail = newStatut === 'approuve' && isDemandeCancellationAllowed({
-      ...demande,
-      statut: newStatut
-    });
+    const canCancelFromEmail = isDemandeCancellationAllowed(updatedDemande);
     const cancelUrl = canCancelFromEmail ? getDemandeCancelUrl(req, id) : null;
 
     // ... rest of your code continues unchanged
@@ -5758,7 +5846,11 @@ app.post('/api/demandes/:id/approuver-app', authenticateToken, async (req, res) 
     }
 
     console.log(`✅ Demande ${id} approuvée depuis l'application`);
-    res.json({ success: true, message: 'Demande approuvée avec succès' });
+    res.json({
+      success: true,
+      message: 'Demande approuvée avec succès',
+      demande: updatedDemande
+    });
 
   } catch (err) {
     console.error('❌ Erreur approbation app:', err);
@@ -5936,6 +6028,7 @@ app.post('/api/demandes/:id/refuser-app', authenticateToken, async (req, res) =>
     }
 
     const demande = result.rows[0];
+    const actingLevel = resolveTunisiaDemandeApprover(demande, req.user);
 
     if (demande.statut !== 'en_attente') {
       return res.status(400).json({
@@ -5944,15 +6037,49 @@ app.post('/api/demandes/:id/refuser-app', authenticateToken, async (req, res) =>
       });
     }
 
-    await pool.query(
+    if (!actingLevel) {
+      return res.status(403).json({
+        success: false,
+        error: 'Vous n\'êtes pas autorisé à refuser cette demande.'
+      });
+    }
+
+    const approverStates = {
+      approuve_responsable1: demande.approuve_responsable1,
+      approuve_responsable2: demande.approuve_responsable2
+    };
+
+    if (actingLevel === 'responsable1') {
+      approverStates.approuve_responsable1 = false;
+    } else {
+      approverStates.approuve_responsable2 = false;
+    }
+
+    const updateResult = await pool.query(
       `UPDATE demande_rh 
        SET statut = 'refuse', 
-           approuve_responsable2 = false,
-           commentaire_refus = $1,
+           approuve_responsable1 = $1,
+           approuve_responsable2 = $2,
+           commentaire_refus = $3,
            updated_at = CURRENT_TIMESTAMP 
-       WHERE id = $2`,
-      [commentaire.trim(), id]
+       WHERE id = $4
+       RETURNING *`,
+      [
+        approverStates.approuve_responsable1,
+        approverStates.approuve_responsable2,
+        commentaire.trim(),
+        id
+      ]
     );
+
+    const updatedDemande = {
+      ...demande,
+      ...updateResult.rows[0],
+      statut: 'refuse',
+      approuve_responsable1: approverStates.approuve_responsable1,
+      approuve_responsable2: approverStates.approuve_responsable2,
+      commentaire_refus: commentaire.trim()
+    };
 
     const typeLabel =
       demande.type_demande === 'conges' ? 'Congé' :
@@ -5994,7 +6121,11 @@ app.post('/api/demandes/:id/refuser-app', authenticateToken, async (req, res) =>
     }
 
     console.log(`✅ Demande ${id} refusée depuis l'application`);
-    res.json({ success: true, message: 'Demande refusée avec succès' });
+    res.json({
+      success: true,
+      message: 'Demande refusée avec succès',
+      demande: updatedDemande
+    });
 
   } catch (err) {
     console.error('❌ Erreur refus app:', err);
