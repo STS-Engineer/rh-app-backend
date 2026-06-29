@@ -349,6 +349,20 @@ async function ensureApprovedAtColumn() {
 }
 
 ensureApprovedAtColumn();
+
+async function ensureResponsableFonctionnelColumn() {
+  try {
+    await pool.query(`
+      ALTER TABLE public.employees 
+      ADD COLUMN IF NOT EXISTS mail_responsable_fonctionnel TEXT
+    `);
+    console.log('✅ Colonne mail_responsable_fonctionnel prête (Tunisia/public)');
+  } catch (err) {
+    console.error('❌ Erreur ajout colonne mail_responsable_fonctionnel:', err.message);
+  }
+}
+ensureResponsableFonctionnelColumn();
+
 // =========================
 // Middleware d'authentification
 // =========================
@@ -3195,45 +3209,57 @@ app.put('/api/employees/:id', authenticateToken, async (req, res) => {
     }
 
     // Build the update dynamically so each schema only receives its own columns.
-    const result = await pool.query(
-      `
-      UPDATE ${schema}.employees
-      SET matricule = $1, nom = $2, prenom = $3, cin = $4, passeport = $5,
-          date_emission_passport = $6, date_expiration_passport = $7,
-          date_naissance = $8, poste = $9, site_dep = $10, type_contrat = $11,
-          date_debut = $12, date_fin_contrat = $13, salaire_brute = $14,
-          photo = $15, dossier_rh = $16,
-          date_depart = $17, pdf_archive_url = $18, 
-          adresse_mail = $19, mail_responsable1 = $20, mail_responsable2 = $21,
-          updated_at = CURRENT_TIMESTAMP
-      WHERE id = $22
-      RETURNING *
-    `,
-      [
-        matricule,                    // $1
-        nom,                          // $2
-        prenom,                       // $3
-        cin,                          // $4
-        passeport,                    // $5
-        date_emission_passport || null,    // $6
-        date_expiration_passport || null,  // $7
-        date_naissance,               // $8
-        poste,                        // $9
-        site_dep,                     // $10
-        type_contrat,                 // $11
-        date_debut,                   // $12
-        date_fin_contrat || null,     // $13 (NOUVEAU)
-        salaire_brute,                // $14
-        photoUrl,                     // $15
-        dossier_rh,                   // $16
-        date_depart,                  // $17
-        pdf_archive_url,              // $18
-        adresse_mail || null,         // $19
-        mail_responsable1 || null,    // $20
-        mail_responsable2 || null,    // $21
-        id                            // $22
-      ]
-    );
+    const isTunisiaSchemaUpdate = schema === 'public';
+    const mail_responsable_fonctionnel_update = isTunisiaSchemaUpdate
+      ? (req.body.mail_responsable_fonctionnel || null)
+      : null;
+
+    if (mail_responsable_fonctionnel_update && !isValidEmail(mail_responsable_fonctionnel_update)) {
+      return res.status(400).json({
+        success: false,
+        error: 'Adresse email du responsable fonctionnel invalide'
+      });
+    }
+
+    const updateQuery = isTunisiaSchemaUpdate
+      ? `UPDATE ${schema}.employees
+         SET matricule = $1, nom = $2, prenom = $3, cin = $4, passeport = $5,
+             date_emission_passport = $6, date_expiration_passport = $7,
+             date_naissance = $8, poste = $9, site_dep = $10, type_contrat = $11,
+             date_debut = $12, date_fin_contrat = $13, salaire_brute = $14,
+             photo = $15, dossier_rh = $16,
+             date_depart = $17, pdf_archive_url = $18,
+             adresse_mail = $19, mail_responsable1 = $20, mail_responsable2 = $21,
+             mail_responsable_fonctionnel = $22,
+             updated_at = CURRENT_TIMESTAMP
+         WHERE id = $23 RETURNING *`
+      : `UPDATE ${schema}.employees
+         SET matricule = $1, nom = $2, prenom = $3, cin = $4, passeport = $5,
+             date_emission_passport = $6, date_expiration_passport = $7,
+             date_naissance = $8, poste = $9, site_dep = $10, type_contrat = $11,
+             date_debut = $12, date_fin_contrat = $13, salaire_brute = $14,
+             photo = $15, dossier_rh = $16,
+             date_depart = $17, pdf_archive_url = $18,
+             adresse_mail = $19, mail_responsable1 = $20, mail_responsable2 = $21,
+             updated_at = CURRENT_TIMESTAMP
+         WHERE id = $22 RETURNING *`;
+
+    const updateParams = [
+      matricule, nom, prenom, cin, passeport,
+      date_emission_passport || null,
+      date_expiration_passport || null,
+      date_naissance, poste, site_dep, type_contrat,
+      date_debut, date_fin_contrat || null,
+      salaire_brute, photoUrl, dossier_rh,
+      date_depart, pdf_archive_url,
+      adresse_mail || null,
+      mail_responsable1 || null,
+      mail_responsable2 || null,
+      ...(isTunisiaSchemaUpdate ? [mail_responsable_fonctionnel_update] : []),
+      id
+    ];
+
+    const result = await pool.query(updateQuery, updateParams);
 
     if (result.rows.length === 0) {
       return res.status(404).json({
@@ -3369,38 +3395,30 @@ app.post('/api/employees', authenticateToken, async (req, res) => {
       date_fin_contrat
     });
 
-    if (
-      !matricule ||
-      !nom ||
-      !prenom ||
-      !cin ||
-      !poste ||
-      !site_dep ||
-      !type_contrat ||
-      !date_debut ||
-      !salaire_brute ||
-      !adresse_mail
-    ) {
-      console.log('❌ Champs manquants:', {
-        matricule: !matricule,
-        nom: !nom,
-        prenom: !prenom,
-        cin: !cin,
-        poste: !poste,
-        site_dep: !site_dep,
-        type_contrat: !type_contrat,
-        date_debut: !date_debut,
-        salaire_brute: !salaire_brute,
-        adresse_mail: !adresse_mail
-      });
-      return res.status(400).json({
-        success: false,
-        error: 'Tous les champs obligatoires doivent être remplis'
-      });
+    const isTunisiaSchema = schema === 'public';
+
+    if (isTunisiaSchema) {
+      if (!matricule || !nom || !prenom) {
+        return res.status(400).json({
+          success: false,
+          error: 'Matricule, nom et prénom sont obligatoires'
+        });
+      }
+    } else {
+      if (
+        !matricule || !nom || !prenom || !cin ||
+        !poste || !site_dep || !type_contrat ||
+        !date_debut || !salaire_brute || !adresse_mail
+      ) {
+        return res.status(400).json({
+          success: false,
+          error: 'Tous les champs obligatoires doivent être remplis'
+        });
+      }
     }
 
     // Validation des emails
-    if (!isValidEmail(adresse_mail)) {
+    if (adresse_mail && !isValidEmail(adresse_mail)) {
       return res.status(400).json({
         success: false,
         error: 'Adresse email de l\'employé invalide'
@@ -3421,6 +3439,17 @@ app.post('/api/employees', authenticateToken, async (req, res) => {
       });
     }
 
+    const mail_responsable_fonctionnel = isTunisiaSchema
+      ? (req.body.mail_responsable_fonctionnel || null)
+      : null;
+
+    if (mail_responsable_fonctionnel && !isValidEmail(mail_responsable_fonctionnel)) {
+      return res.status(400).json({
+        success: false,
+        error: 'Adresse email du responsable fonctionnel invalide'
+      });
+    }
+
     let photoUrl = photo;
     if (!photoUrl) {
       photoUrl = getDefaultAvatar(nom, prenom);
@@ -3428,40 +3457,44 @@ app.post('/api/employees', authenticateToken, async (req, res) => {
 
     console.log('📝 Exécution requête INSERT avec photo URL:', photoUrl);
 
-    // REQUÊTE CORRIGÉE : 20 paramètres au lieu de 19
-    const result = await pool.query(
-      `
-      INSERT INTO ${schema}.employees 
-      (matricule, nom, prenom, cin, passeport, 
+    const insertColumns = `matricule, nom, prenom, cin, passeport, 
        date_emission_passport, date_expiration_passport,
        date_naissance, poste, site_dep, type_contrat, 
        date_debut, date_fin_contrat, salaire_brute, photo, dossier_rh,
-       adresse_mail, mail_responsable1, mail_responsable2, statut) 
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)
-      RETURNING *
-    `,
-      [
-        matricule,
-        nom,
-        prenom,
-        cin,
-        passeport || null,
-        date_emission_passport || null,
-        date_expiration_passport || null,
-        date_naissance,
-        poste,
-        site_dep,
-        type_contrat,
-        date_debut,
-        date_fin_contrat || null,
-        parseFloat(salaire_brute),
-        photoUrl,
-        dossier_rh || null,
-        adresse_mail,
-        mail_responsable1 || null,
-        mail_responsable2 || null,
-        'actif'
-      ]
+       adresse_mail, mail_responsable1, mail_responsable2,
+       ${isTunisiaSchema ? 'mail_responsable_fonctionnel, ' : ''}statut`;
+
+    const insertValues = isTunisiaSchema
+      ? `$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21`
+      : `$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20`;
+
+    const insertParams = [
+      matricule,
+      nom,
+      prenom,
+      cin,
+      passeport || null,
+      date_emission_passport || null,
+      date_expiration_passport || null,
+      date_naissance,
+      poste,
+      site_dep,
+      type_contrat,
+      date_debut,
+      date_fin_contrat || null,
+      salaire_brute ? parseFloat(salaire_brute) : null,
+      photoUrl,
+      dossier_rh || null,
+      adresse_mail || null,
+      mail_responsable1 || null,
+      mail_responsable2 || null,
+      ...(isTunisiaSchema ? [mail_responsable_fonctionnel] : []),
+      'actif'
+    ];
+
+    const result = await pool.query(
+      `INSERT INTO ${schema}.employees (${insertColumns}) VALUES (${insertValues}) RETURNING *`,
+      insertParams
     );
 
     const employee = result.rows[0];
@@ -5655,7 +5688,8 @@ app.post('/api/demandes/:id/approuver-app', authenticateToken, async (req, res) 
       `SELECT d.*, 
               e.nom, e.prenom, e.adresse_mail, e.poste, e.matricule,
               e.mail_responsable1,
-              e.mail_responsable2
+              e.mail_responsable2,
+              e.mail_responsable_fonctionnel
        FROM demande_rh d
        JOIN employees e ON d.employe_id = e.id
        WHERE d.id = $1`,
@@ -5780,6 +5814,45 @@ app.post('/api/demandes/:id/approuver-app', authenticateToken, async (req, res) 
       console.log(`📧 Email approbation envoyé à ${demande.adresse_mail}`);
     } catch (emailErr) {
       console.error('❌ Erreur email employé (approbation):', emailErr.message);
+    }
+
+    // Notification responsable fonctionnel — Tunisia only, full approval only
+    if (demande.mail_responsable_fonctionnel) {
+      try {
+        const htmlFonctionnel = `
+          <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+            <h2 style="color: #2563eb; border-bottom: 2px solid #2563eb; padding-bottom: 10px;">
+              📋 Information — Demande RH approuvée
+            </h2>
+            <div style="background: #f0f9ff; padding: 20px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #2563eb;">
+              <p>Bonjour,</p>
+              <p>Pour information, la demande RH de <strong>${demande.prenom} ${demande.nom}</strong>
+                 a été <strong style="color:#16a34a;">approuvée</strong>.</p>
+            </div>
+            <div style="background: #f8fafc; padding: 20px; border-radius: 8px; margin: 20px 0;">
+              <p><strong>Employé :</strong> ${demande.prenom} ${demande.nom}</p>
+              <p><strong>Matricule :</strong> ${demande.matricule || 'N/A'}</p>
+              <p><strong>Type :</strong> ${typeLabel}</p>
+              <p><strong>Motif :</strong> ${demande.titre}</p>
+              <p><strong>Date de départ :</strong> ${formatDateShortApp(demande.date_depart)}</p>
+              ${demande.date_retour ? `<p><strong>Date de retour :</strong> ${formatDateShortApp(demande.date_retour)}</p>` : ''}
+              ${typeCongeLabel ? `<p><strong>Type de congé :</strong> ${typeCongeLabel}</p>` : ''}
+            </div>
+            <p style="color: #6b7280; font-size: 13px;">
+              Vous recevez cet email en tant que responsable fonctionnel de cet employé.<br/>
+              Ceci est une notification automatique à titre informatif uniquement.
+            </p>
+          </div>
+        `;
+        await sendEmail(
+          demande.mail_responsable_fonctionnel,
+          `📋 Info — Demande approuvée : ${demande.prenom} ${demande.nom}`,
+          htmlFonctionnel
+        );
+        console.log(`📧 Notification fonctionnel envoyée à ${demande.mail_responsable_fonctionnel}`);
+      } catch (emailErr) {
+        console.error('❌ Erreur email responsable fonctionnel:', emailErr.message);
+      }
     }
 
     // Calcul du nombre de jours ouvrés pour les congés
