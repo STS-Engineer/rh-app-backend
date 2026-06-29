@@ -328,14 +328,27 @@ async function ensureVisaGeneratedColumns() {
   try {
     await pool.query(`ALTER TABLE visa_documents ADD COLUMN IF NOT EXISTS generated_file_url TEXT`);
     await pool.query(`ALTER TABLE visa_documents ADD COLUMN IF NOT EXISTS generated_original_filename TEXT`);
-    console.log("âœ… Colonnes VISA generated prÃªtes");
+    console.log("✅ Colonnes VISA generated prêtes");
   } catch (err) {
-    console.error("âŒ Erreur ajout colonnes VISA generated:", err.message);
+    console.error("❌ Erreur ajout colonnes VISA generated:", err.message);
   }
 }
 
 ensureVisaGeneratedColumns();
 
+async function ensureApprovedAtColumn() {
+  try {
+    await pool.query(`
+      ALTER TABLE demande_rh 
+      ADD COLUMN IF NOT EXISTS approved_at TIMESTAMP
+    `);
+    console.log('✅ Colonne approved_at prête');
+  } catch (err) {
+    console.error('❌ Erreur ajout colonne approved_at:', err.message);
+  }
+}
+
+ensureApprovedAtColumn();
 // =========================
 // Middleware d'authentification
 // =========================
@@ -5373,7 +5386,8 @@ app.post('/api/demandes/:id/changer-statut-approuve', authenticateToken, async (
            approuve_responsable1 = true,
            approuve_responsable2 = true,
            commentaire_refus = NULL,
-           updated_at = CURRENT_TIMESTAMP
+           updated_at = CURRENT_TIMESTAMP,
+           approved_at = CURRENT_TIMESTAMP
        WHERE id = $1`,
       [id]
     );
@@ -5687,7 +5701,8 @@ app.post('/api/demandes/:id/approuver-app', authenticateToken, async (req, res) 
        SET statut = $1, 
            approuve_responsable2 = $2,
            approuve_responsable1 = $3,
-           updated_at = CURRENT_TIMESTAMP 
+           updated_at = CURRENT_TIMESTAMP,
+           approved_at = CASE WHEN $1 = 'approuve' THEN CURRENT_TIMESTAMP ELSE approved_at END
        WHERE id = $4
        RETURNING *`,
       [
@@ -6132,7 +6147,195 @@ app.post('/api/demandes/:id/refuser-app', authenticateToken, async (req, res) =>
     res.status(500).json({ success: false, error: 'Erreur lors du refus', details: err.message });
   }
 });
+// =========================
+// JOB PLANIFIÉ : RAPPORT HEBDOMADAIRE RH (LUNDI 10H)
+// =========================
 
+const HR_WEEKLY_REPORT_EMAIL = 'rami.mejri@avocarbon.com';
+
+async function generateAndSendWeeklyHRReport() {
+  try {
+    const now = new Date();
+
+    // Last 7 days window
+    const lastMonday = new Date(now);
+    lastMonday.setDate(now.getDate() - 7);
+    lastMonday.setHours(0, 0, 0, 0);
+
+    const lastSunday = new Date(now);
+    lastSunday.setDate(now.getDate() - 1);
+    lastSunday.setHours(23, 59, 59, 999);
+
+    console.log(`📊 Rapport hebdomadaire: ${lastMonday.toLocaleDateString('fr-FR')} → ${lastSunday.toLocaleDateString('fr-FR')}`);
+
+    const result = await pool.query(`
+      SELECT 
+        e.matricule,
+        e.prenom || ' ' || e.nom AS employe,
+        d.type_demande,
+        d.type_conge,
+        d.type_conge_autre,
+        d.statut,
+        d.date_depart,
+        d.date_retour,
+        d.heure_depart,
+        d.heure_retour,
+        d.demi_journee,
+        d.approved_at
+      FROM public.demande_rh d
+      LEFT JOIN public.employees e ON d.employe_id = e.id
+      WHERE d.statut = 'approuve'
+        AND d.approved_at >= $1
+        AND d.approved_at <= $2
+      ORDER BY d.approved_at DESC
+    `, [lastMonday, lastSunday]);
+
+    if (result.rows.length === 0) {
+      console.log('📭 Aucune demande approuvée cette semaine — rapport non envoyé');
+      return;
+    }
+
+    console.log(`✅ ${result.rows.length} demande(s) trouvée(s)`);
+
+    // Helpers
+    function calcWorkingDays(dateDepart, dateRetour, demiJournee, typeDemande) {
+      if (!dateDepart || !dateRetour) return '';
+      const start = new Date(dateDepart);
+      const end = new Date(dateRetour);
+      start.setHours(0, 0, 0, 0);
+      end.setHours(0, 0, 0, 0);
+
+      if (typeDemande === 'congé' && end.getTime() === start.getTime()) {
+        const day = start.getDay();
+        const base = (day !== 0 && day !== 6) ? 1 : 0;
+        return demiJournee && base > 0 ? `${base - 0.5}` : `${base}`;
+      }
+
+      if (end < start) return '0';
+      let count = 0;
+      const current = new Date(start);
+      while (current < end) {
+        const day = current.getDay();
+        if (day !== 0 && day !== 6) count++;
+        current.setDate(current.getDate() + 1);
+      }
+      return demiJournee && count > 0 ? `${count - 0.5}` : `${count}`;
+    }
+
+    function formatDateFrench(dateString) {
+      if (!dateString) return 'N/A';
+      const date = new Date(dateString);
+      if (isNaN(date.getTime())) return String(dateString);
+      return date.toLocaleDateString('fr-FR');
+    }
+
+    function getTypeDemandeLabel(type) {
+      if (type === 'congé' || type === 'conges') return 'Congé';
+      if (type === 'autorisation_absence' || type === 'autorisation') return "Autorisation d'absence";
+      if (type === 'mission') return 'Mission';
+      return type || '';
+    }
+
+    function getTypeCongeLabel(type_conge, type_conge_autre) {
+      if (!type_conge) return 'N/A';
+      if (type_conge === 'autre') return type_conge_autre || 'Autre';
+      return type_conge;
+    }
+
+    // Build CSV
+    const headers = [
+      'Matricule',
+      'Employé',
+      'Type de demande',
+      'Type de congé',
+      'Statut',
+      'Date de début',
+      'Date de retour',
+      'Heure de départ',
+      'Heure de retour',
+      'Nombre de jours ouvrables',
+      'Demi-journée',
+      'Date d\'approbation',
+    ];
+
+    const rows = result.rows.map(d => [
+      d.matricule || 'N/A',
+      d.employe || 'N/A',
+      getTypeDemandeLabel(d.type_demande),
+      getTypeCongeLabel(d.type_conge, d.type_conge_autre),
+      'Approuvé',
+      formatDateFrench(d.date_depart),
+      formatDateFrench(d.date_retour),
+      d.heure_depart || 'N/A',
+      d.heure_retour || 'N/A',
+      calcWorkingDays(d.date_depart, d.date_retour, d.demi_journee, d.type_demande),
+      d.demi_journee ? 'Oui' : 'Non',
+      formatDateFrench(d.approved_at),
+    ]);
+
+    const csv = '\uFEFF' + [headers, ...rows]
+      .map(row => row.map(cell => `"${String(cell || '').replace(/"/g, '""')}"`).join(';'))
+      .join('\n');
+
+    const dateStr = now.toLocaleDateString('fr-FR').replace(/\//g, '-');
+    const filename = `rapport_demandes_approuvees_${dateStr}.csv`;
+
+    // Send email
+    await emailTransporter.sendMail({
+      from: { name: EMAIL_FROM_NAME, address: EMAIL_FROM },
+      to: HR_WEEKLY_REPORT_EMAIL,
+      subject: `📊 Rapport hebdomadaire RH — Demandes approuvées (${lastMonday.toLocaleDateString('fr-FR')} → ${lastSunday.toLocaleDateString('fr-FR')})`,
+      html: `
+        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+          <h2 style="color: #2563eb; border-bottom: 2px solid #2563eb; padding-bottom: 10px;">
+            📊 Rapport hebdomadaire — Demandes approuvées
+          </h2>
+          <div style="background: #f0f9ff; padding: 20px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #2563eb;">
+            <p><strong>Période :</strong> ${lastMonday.toLocaleDateString('fr-FR')} → ${lastSunday.toLocaleDateString('fr-FR')}</p>
+            <p><strong>Nombre de demandes approuvées :</strong> 
+              <span style="color: #2563eb; font-size: 18px; font-weight: bold;">${result.rows.length}</span>
+            </p>
+          </div>
+          <p>Veuillez trouver en pièce jointe le fichier CSV récapitulatif des demandes approuvées de la semaine.</p>
+          <p style="color: #6b7280; font-size: 13px; margin-top: 30px;">
+            Rapport généré automatiquement chaque lundi à 10h00.<br/>
+            © ${new Date().getFullYear()} RH Manager - Administration STS
+          </p>
+        </div>
+      `,
+      attachments: [
+        {
+          filename,
+          content: Buffer.from(csv, 'utf-8'),
+          contentType: 'text/csv; charset=utf-8',
+        }
+      ]
+    });
+
+    console.log(`✅ Rapport hebdomadaire envoyé à ${HR_WEEKLY_REPORT_EMAIL} (${result.rows.length} demandes)`);
+
+  } catch (error) {
+    console.error('❌ Erreur rapport hebdomadaire:', error);
+  }
+}
+
+// Check every minute — fires only on Monday at 10:00
+setInterval(() => {
+  const now = new Date();
+  if (now.getDay() === 1 && now.getHours() === 10 && now.getMinutes() === 0) {
+    generateAndSendWeeklyHRReport();
+  }
+}, 60000);
+
+// Manual trigger for testing
+app.get('/api/weekly-report/trigger', authenticateToken, async (req, res) => {
+  try {
+    await generateAndSendWeeklyHRReport();
+    res.json({ success: true, message: 'Rapport envoyé avec succès' });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
 // =========================
 // Fallback & erreurs
 // =========================
