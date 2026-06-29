@@ -6264,19 +6264,22 @@ async function generateAndSendWeeklyHRReport() {
       ORDER BY d.approved_at DESC
     `, [lastMonday, lastSunday]);
 
-    if (result.rows.length === 0) {
-      console.log('📭 Aucune demande approuvée cette semaine — rapport non envoyé');
+if (result.rows.length === 0) {
+  await emailTransporter.sendMail({
+    from: { name: EMAIL_FROM_NAME, address: EMAIL_FROM },
+    to: HR_WEEKLY_REPORT_EMAIL,
+    subject: 'Test email rapport RH',
+    html: '<p>Test OK: le système email fonctionne.</p>'
+  });
 
-      return {
-        sent: false,
-        reason: 'Aucune demande approuvée cette semaine',
-        count: 0,
-        to: HR_WEEKLY_REPORT_EMAIL,
-        period: {
-          from: lastMonday,
-          to: lastSunday,
-          label: periodLabel
-        }
+  return {
+    sent: true,
+    test: true,
+    reason: 'Aucune demande approuvée, email test envoyé',
+    count: 0,
+    to: HR_WEEKLY_REPORT_EMAIL
+  };
+}
       };
     }
 
