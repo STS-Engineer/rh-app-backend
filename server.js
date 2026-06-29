@@ -6264,22 +6264,38 @@ async function generateAndSendWeeklyHRReport() {
       ORDER BY d.approved_at DESC
     `, [lastMonday, lastSunday]);
 
-if (result.rows.length === 0) {
-  await emailTransporter.sendMail({
-    from: { name: EMAIL_FROM_NAME, address: EMAIL_FROM },
-    to: HR_WEEKLY_REPORT_EMAIL,
-    subject: 'Test email rapport RH',
-    html: '<p>Test OK: le système email fonctionne.</p>'
-  });
+    if (result.rows.length === 0) {
+      const info = await emailTransporter.sendMail({
+        from: { name: EMAIL_FROM_NAME, address: EMAIL_FROM },
+        to: HR_WEEKLY_REPORT_EMAIL,
+        subject: '✅ Test email rapport RH',
+        html: `
+          <div style="font-family: Arial, sans-serif;">
+            <h2>✅ Test Email RH</h2>
+            <p>Le système d'envoi email fonctionne.</p>
+            <p>Aucune demande approuvée trouvée pour la période :</p>
+            <p><strong>${periodLabel}</strong></p>
+          </div>
+        `
+      });
 
-  return {
-    sent: true,
-    test: true,
-    reason: 'Aucune demande approuvée, email test envoyé',
-    count: 0,
-    to: HR_WEEKLY_REPORT_EMAIL
-  };
-}
+      return {
+        sent: true,
+        test: true,
+        reason: 'Aucune demande approuvée, email test envoyé',
+        count: 0,
+        to: HR_WEEKLY_REPORT_EMAIL,
+        mail: {
+          messageId: info.messageId,
+          accepted: info.accepted,
+          rejected: info.rejected,
+          response: info.response
+        },
+        period: {
+          from: lastMonday,
+          to: lastSunday,
+          label: periodLabel
+        }
       };
     }
 
@@ -6314,8 +6330,10 @@ if (result.rows.length === 0) {
 
     function formatDateFrench(dateString) {
       if (!dateString) return 'N/A';
+
       const date = new Date(dateString);
       if (isNaN(date.getTime())) return String(dateString);
+
       return date.toLocaleDateString('fr-FR');
     }
 
@@ -6369,7 +6387,7 @@ if (result.rows.length === 0) {
     const dateStr = now.toLocaleDateString('fr-FR').replace(/\//g, '-');
     const filename = `rapport_demandes_approuvees_${dateStr}.csv`;
 
-    const mailOptions = {
+    const info = await emailTransporter.sendMail({
       from: { name: EMAIL_FROM_NAME, address: EMAIL_FROM },
       to: HR_WEEKLY_REPORT_EMAIL,
       subject: `📊 Rapport hebdomadaire RH — Demandes approuvées (${periodLabel})`,
@@ -6378,13 +6396,16 @@ if (result.rows.length === 0) {
           <h2 style="color: #2563eb; border-bottom: 2px solid #2563eb; padding-bottom: 10px;">
             📊 Rapport hebdomadaire — Demandes approuvées
           </h2>
+
           <div style="background: #f0f9ff; padding: 20px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #2563eb;">
             <p><strong>Période :</strong> ${periodLabel}</p>
             <p><strong>Nombre de demandes approuvées :</strong> 
               <span style="color: #2563eb; font-size: 18px; font-weight: bold;">${result.rows.length}</span>
             </p>
           </div>
+
           <p>Veuillez trouver en pièce jointe le fichier CSV récapitulatif des demandes approuvées de la semaine.</p>
+
           <p style="color: #6b7280; font-size: 13px; margin-top: 30px;">
             Rapport généré automatiquement chaque lundi à 10h00.<br/>
             © ${new Date().getFullYear()} RH Manager - Administration STS
@@ -6398,30 +6419,25 @@ if (result.rows.length === 0) {
           contentType: 'text/csv; charset=utf-8',
         }
       ]
-    };
-
-    const info = await emailTransporter.sendMail(mailOptions);
-
-    console.log(`✅ Rapport hebdomadaire envoyé à ${HR_WEEKLY_REPORT_EMAIL}`);
-    console.log('📧 Email info:', info);
+    });
 
     return {
       sent: true,
+      test: false,
       count: result.rows.length,
       to: HR_WEEKLY_REPORT_EMAIL,
       from: EMAIL_FROM,
       filename,
-      period: {
-        from: lastMonday,
-        to: lastSunday,
-        label: periodLabel
-      },
       mail: {
         messageId: info.messageId,
         accepted: info.accepted,
         rejected: info.rejected,
-        pending: info.pending,
         response: info.response
+      },
+      period: {
+        from: lastMonday,
+        to: lastSunday,
+        label: periodLabel
       }
     };
 
@@ -6449,9 +6465,7 @@ app.get('/api/weekly-report/trigger', authenticateToken, async (req, res) => {
 
     res.json({
       success: true,
-      message: result.sent
-        ? 'Rapport envoyé avec succès'
-        : 'Rapport non envoyé',
+      message: result.sent ? 'Rapport envoyé avec succès' : 'Rapport non envoyé',
       result
     });
 
