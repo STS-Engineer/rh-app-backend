@@ -6230,7 +6230,6 @@ async function generateAndSendWeeklyHRReport() {
   try {
     const now = new Date();
 
-    // Last 7 days window
     const lastMonday = new Date(now);
     lastMonday.setDate(now.getDate() - 7);
     lastMonday.setHours(0, 0, 0, 0);
@@ -6239,7 +6238,9 @@ async function generateAndSendWeeklyHRReport() {
     lastSunday.setDate(now.getDate() - 1);
     lastSunday.setHours(23, 59, 59, 999);
 
-    console.log(`📊 Rapport hebdomadaire: ${lastMonday.toLocaleDateString('fr-FR')} → ${lastSunday.toLocaleDateString('fr-FR')}`);
+    const periodLabel = `${lastMonday.toLocaleDateString('fr-FR')} → ${lastSunday.toLocaleDateString('fr-FR')}`;
+
+    console.log(`📊 Rapport hebdomadaire: ${periodLabel}`);
 
     const result = await pool.query(`
       SELECT 
@@ -6265,33 +6266,46 @@ async function generateAndSendWeeklyHRReport() {
 
     if (result.rows.length === 0) {
       console.log('📭 Aucune demande approuvée cette semaine — rapport non envoyé');
-      return;
+
+      return {
+        sent: false,
+        reason: 'Aucune demande approuvée cette semaine',
+        count: 0,
+        to: HR_WEEKLY_REPORT_EMAIL,
+        period: {
+          from: lastMonday,
+          to: lastSunday,
+          label: periodLabel
+        }
+      };
     }
 
-    console.log(`✅ ${result.rows.length} demande(s) trouvée(s)`);
-
-    // Helpers
     function calcWorkingDays(dateDepart, dateRetour, demiJournee, typeDemande) {
       if (!dateDepart || !dateRetour) return '';
+
       const start = new Date(dateDepart);
       const end = new Date(dateRetour);
+
       start.setHours(0, 0, 0, 0);
       end.setHours(0, 0, 0, 0);
 
       if (typeDemande === 'congé' && end.getTime() === start.getTime()) {
         const day = start.getDay();
-        const base = (day !== 0 && day !== 6) ? 1 : 0;
+        const base = day !== 0 && day !== 6 ? 1 : 0;
         return demiJournee && base > 0 ? `${base - 0.5}` : `${base}`;
       }
 
       if (end < start) return '0';
+
       let count = 0;
       const current = new Date(start);
+
       while (current < end) {
         const day = current.getDay();
         if (day !== 0 && day !== 6) count++;
         current.setDate(current.getDate() + 1);
       }
+
       return demiJournee && count > 0 ? `${count - 0.5}` : `${count}`;
     }
 
@@ -6315,7 +6329,6 @@ async function generateAndSendWeeklyHRReport() {
       return type_conge;
     }
 
-    // Build CSV
     const headers = [
       'Matricule',
       'Employé',
@@ -6353,18 +6366,17 @@ async function generateAndSendWeeklyHRReport() {
     const dateStr = now.toLocaleDateString('fr-FR').replace(/\//g, '-');
     const filename = `rapport_demandes_approuvees_${dateStr}.csv`;
 
-    // Send email
-    await emailTransporter.sendMail({
+    const mailOptions = {
       from: { name: EMAIL_FROM_NAME, address: EMAIL_FROM },
       to: HR_WEEKLY_REPORT_EMAIL,
-      subject: `📊 Rapport hebdomadaire RH — Demandes approuvées (${lastMonday.toLocaleDateString('fr-FR')} → ${lastSunday.toLocaleDateString('fr-FR')})`,
+      subject: `📊 Rapport hebdomadaire RH — Demandes approuvées (${periodLabel})`,
       html: `
         <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
           <h2 style="color: #2563eb; border-bottom: 2px solid #2563eb; padding-bottom: 10px;">
             📊 Rapport hebdomadaire — Demandes approuvées
           </h2>
           <div style="background: #f0f9ff; padding: 20px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #2563eb;">
-            <p><strong>Période :</strong> ${lastMonday.toLocaleDateString('fr-FR')} → ${lastSunday.toLocaleDateString('fr-FR')}</p>
+            <p><strong>Période :</strong> ${periodLabel}</p>
             <p><strong>Nombre de demandes approuvées :</strong> 
               <span style="color: #2563eb; font-size: 18px; font-weight: bold;">${result.rows.length}</span>
             </p>
@@ -6383,30 +6395,73 @@ async function generateAndSendWeeklyHRReport() {
           contentType: 'text/csv; charset=utf-8',
         }
       ]
-    });
+    };
 
-    console.log(`✅ Rapport hebdomadaire envoyé à ${HR_WEEKLY_REPORT_EMAIL} (${result.rows.length} demandes)`);
+    const info = await emailTransporter.sendMail(mailOptions);
+
+    console.log(`✅ Rapport hebdomadaire envoyé à ${HR_WEEKLY_REPORT_EMAIL}`);
+    console.log('📧 Email info:', info);
+
+    return {
+      sent: true,
+      count: result.rows.length,
+      to: HR_WEEKLY_REPORT_EMAIL,
+      from: EMAIL_FROM,
+      filename,
+      period: {
+        from: lastMonday,
+        to: lastSunday,
+        label: periodLabel
+      },
+      mail: {
+        messageId: info.messageId,
+        accepted: info.accepted,
+        rejected: info.rejected,
+        pending: info.pending,
+        response: info.response
+      }
+    };
 
   } catch (error) {
     console.error('❌ Erreur rapport hebdomadaire:', error);
+    throw error;
   }
 }
 
 // Check every minute — fires only on Monday at 10:00
 setInterval(() => {
   const now = new Date();
+
   if (now.getDay() === 1 && now.getHours() === 10 && now.getMinutes() === 0) {
-    generateAndSendWeeklyHRReport();
+    generateAndSendWeeklyHRReport()
+      .then(result => console.log('📊 Résultat job hebdomadaire:', result))
+      .catch(error => console.error('❌ Job hebdomadaire échoué:', error));
   }
 }, 60000);
 
-// Manual trigger for testing
+// Manual trigger for testing with Postman
 app.get('/api/weekly-report/trigger', authenticateToken, async (req, res) => {
   try {
-    await generateAndSendWeeklyHRReport();
-    res.json({ success: true, message: 'Rapport envoyé avec succès' });
+    const result = await generateAndSendWeeklyHRReport();
+
+    res.json({
+      success: true,
+      message: result.sent
+        ? 'Rapport envoyé avec succès'
+        : 'Rapport non envoyé',
+      result
+    });
+
   } catch (error) {
-    res.status(500).json({ success: false, error: error.message });
+    res.status(500).json({
+      success: false,
+      message: 'Erreur pendant génération/envoi rapport',
+      error: error.message,
+      code: error.code,
+      command: error.command,
+      response: error.response,
+      responseCode: error.responseCode
+    });
   }
 });
 // =========================
