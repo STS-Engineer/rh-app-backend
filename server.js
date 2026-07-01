@@ -4518,7 +4518,7 @@ async function sendVisaDossierCreationEmail({ to, employeeName }) {
         <li><b>Ramener une copie de la page 1 du passeport</b></li>
         <li><b>Ramener 2 photos d'identité</b></li>
         <li><b>Envoyer par mail une copie de l’historique CNSS</b> à
-          <a href="mailto:${EMAIL_FROM}">${EMAIL_FROM}</a>
+          <a href="mailto:fethi.chaouachi@avocarbon.com">fethi.chaouachi@avocarbon.com</a>
         </li>
       </ul>
       <p>Merci,<br/>${EMAIL_FROM_NAME}</p>
@@ -5162,6 +5162,156 @@ app.delete("/api/visa-dossiers/:id", authenticateToken, requireTunisiaTenant, as
     });
   } finally {
     client.release();
+  }
+});
+
+// ==================================================
+// RAPPELS AUTOMATIQUES — EXPIRATION VISA
+// ==================================================
+const VISA_REMINDER_EMAIL = "fethi.chaouachi@avocarbon.com";
+const VISA_RENEWAL_ACTIVE_STATUSES = ["EN_COURS", "PRET_POUR_DEPOT"];
+
+function formatVisaDate(value) {
+  if (!value) return "—";
+  return new Date(value).toLocaleDateString("fr-FR");
+}
+
+// Un renouvellement est "en cours" dès qu'un autre dossier VISA existe pour le
+// même employé avec un statut actif — sert à annuler les rappels de l'ancien visa.
+async function hasActiveVisaRenewal(employeeId, currentDossierId) {
+  const result = await pool.query(
+    `SELECT 1 FROM visa_dossiers
+     WHERE employee_id = $1
+       AND id <> $2
+       AND statut = ANY($3::text[])
+     LIMIT 1`,
+    [employeeId, currentDossierId, VISA_RENEWAL_ACTIVE_STATUSES]
+  );
+  return result.rows.length > 0;
+}
+
+async function sendVisaOneMonthReminderEmail({ employeeName, visaDateFin }) {
+  const formattedDate = formatVisaDate(visaDateFin);
+  const subject = `Visa expirant dans 30 jours - ${employeeName}`;
+  const html = `
+    <div style="font-family: Arial, sans-serif; line-height:1.6">
+      <p>Bonjour,</p>
+      <p>Le visa de <b>${escapeHtml(employeeName)}</b> arrive à expiration le <b>${formattedDate}</b>.</p>
+      <p>Il reste <b>un mois</b> avant l'expiration de ce visa.</p>
+      <p>Il est recommandé de <b>lancer dès maintenant une nouvelle demande de visa</b> pour cet employé.</p>
+      <p>Ceci est un message automatique du système RH.</p>
+    </div>
+  `;
+  return sendEmail(VISA_REMINDER_EMAIL, subject, html);
+}
+
+async function sendVisaExpiredTodayEmail({ employeeName, visaDateFin }) {
+  const formattedDate = formatVisaDate(visaDateFin);
+  const subject = `Visa expirant aujourd'hui - ${employeeName}`;
+  const html = `
+    <div style="font-family: Arial, sans-serif; line-height:1.6">
+      <p>Bonjour,</p>
+      <p>Le visa de <b>${escapeHtml(employeeName)}</b> expire <b>aujourd'hui (${formattedDate})</b>.</p>
+      <p>Ceci est un message automatique du système RH.</p>
+    </div>
+  `;
+  return sendEmail(VISA_REMINDER_EMAIL, subject, html);
+}
+
+// Job quotidien : dossiers VISA_ACCORDE nécessitant un rappel 30 jours ou expiration.
+// Les colonnes *_reminder_sent garantissent l'idempotence même en cas d'exécutions multiples.
+// Les bornes "<=" (plutôt qu'une égalité stricte) rattrapent un jour manqué si le
+// serveur était indisponible exactement à la date pivot.
+async function checkVisaExpiryReminders() {
+  try {
+    console.log("🔔 Vérification des rappels d'expiration VISA...");
+
+    const oneMonthDue = await pool.query(
+      `SELECT d.id, d.employee_id, d.visa_date_fin, e.prenom, e.nom
+       FROM visa_dossiers d
+       JOIN employees e ON e.id = d.employee_id
+       WHERE d.statut = 'VISA_ACCORDE'
+         AND d.visa_date_fin IS NOT NULL
+         AND d.one_month_reminder_sent = FALSE
+         AND (d.visa_date_fin::date - INTERVAL '30 days') <= CURRENT_DATE
+         AND d.visa_date_fin::date >= CURRENT_DATE`
+    );
+
+    for (const dossier of oneMonthDue.rows) {
+      const employeeName = `${dossier.prenom} ${dossier.nom}`;
+      try {
+        if (await hasActiveVisaRenewal(dossier.employee_id, dossier.id)) {
+          console.log(`↪️ Rappel 30 jours ignoré (renouvellement en cours) pour ${employeeName} (dossier #${dossier.id})`);
+          continue;
+        }
+        await sendVisaOneMonthReminderEmail({ employeeName, visaDateFin: dossier.visa_date_fin });
+        await pool.query(
+          `UPDATE visa_dossiers SET one_month_reminder_sent = TRUE, one_month_reminder_sent_at = now() WHERE id = $1`,
+          [dossier.id]
+        );
+        console.log(`✅ Rappel 30 jours envoyé pour ${employeeName} (dossier #${dossier.id})`);
+      } catch (innerErr) {
+        console.error(`❌ Erreur rappel 30 jours VISA dossier #${dossier.id}:`, innerErr.message);
+      }
+    }
+
+    const expiryDue = await pool.query(
+      `SELECT d.id, d.employee_id, d.visa_date_fin, e.prenom, e.nom
+       FROM visa_dossiers d
+       JOIN employees e ON e.id = d.employee_id
+       WHERE d.statut = 'VISA_ACCORDE'
+         AND d.visa_date_fin IS NOT NULL
+         AND d.expiry_reminder_sent = FALSE
+         AND d.visa_date_fin::date <= CURRENT_DATE`
+    );
+
+    for (const dossier of expiryDue.rows) {
+      const employeeName = `${dossier.prenom} ${dossier.nom}`;
+      try {
+        if (await hasActiveVisaRenewal(dossier.employee_id, dossier.id)) {
+          // Renouvellement déjà lancé : le rappel d'expiration de l'ancien visa est annulé.
+          await pool.query(
+            `UPDATE visa_dossiers SET expiry_reminder_sent = TRUE, expiry_reminder_sent_at = now() WHERE id = $1`,
+            [dossier.id]
+          );
+          console.log(`↪️ Rappel expiration annulé (renouvellement en cours) pour ${employeeName} (dossier #${dossier.id})`);
+          continue;
+        }
+        await sendVisaExpiredTodayEmail({ employeeName, visaDateFin: dossier.visa_date_fin });
+        await pool.query(
+          `UPDATE visa_dossiers SET expiry_reminder_sent = TRUE, expiry_reminder_sent_at = now() WHERE id = $1`,
+          [dossier.id]
+        );
+        console.log(`✅ Rappel expiration envoyé pour ${employeeName} (dossier #${dossier.id})`);
+      } catch (innerErr) {
+        console.error(`❌ Erreur rappel expiration VISA dossier #${dossier.id}:`, innerErr.message);
+      }
+    }
+  } catch (err) {
+    console.error("❌ Erreur vérification rappels VISA:", err.message);
+  }
+}
+
+// Vérification au démarrage (rattrape une période d'indisponibilité du serveur)
+setTimeout(() => {
+  checkVisaExpiryReminders();
+}, 15000);
+
+// Vérification quotidienne à 8h05
+setInterval(() => {
+  const now = new Date();
+  if (now.getHours() === 8 && now.getMinutes() === 5) {
+    checkVisaExpiryReminders();
+  }
+}, 60000);
+
+// Déclenchement manuel pour tests
+app.get("/api/visa-reminders/trigger", authenticateToken, async (req, res) => {
+  try {
+    await checkVisaExpiryReminders();
+    res.json({ success: true, message: "Vérification des rappels VISA exécutée" });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
   }
 });
 
