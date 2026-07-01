@@ -6265,7 +6265,6 @@ app.post('/api/demandes/:id/annuler/confirm', async (req, res) => {
   }
 });
 
-
 app.post('/api/demandes/:id/refuser-app', authenticateToken, async (req, res) => {
   const { id } = req.params;
   const { commentaire } = req.body;
@@ -6291,7 +6290,6 @@ app.post('/api/demandes/:id/refuser-app', authenticateToken, async (req, res) =>
     }
 
     const demande = result.rows[0];
-    const actingLevel = resolveTunisiaDemandeApprover(demande, req.user);
 
     if (demande.statut !== 'en_attente') {
       return res.status(400).json({
@@ -6300,36 +6298,24 @@ app.post('/api/demandes/:id/refuser-app', authenticateToken, async (req, res) =>
       });
     }
 
-    if (!actingLevel) {
+    // ✅ FIX: any authenticated Tunisia tenant user can refuse the demande
+    if (!isTunisiaTenantUser(req.user)) {
       return res.status(403).json({
         success: false,
         error: 'Vous n\'êtes pas autorisé à refuser cette demande.'
       });
     }
 
-    const approverStates = {
-      approuve_responsable1: demande.approuve_responsable1,
-      approuve_responsable2: demande.approuve_responsable2
-    };
-
-    if (actingLevel === 'responsable1') {
-      approverStates.approuve_responsable1 = false;
-    } else {
-      approverStates.approuve_responsable2 = false;
-    }
-
     const updateResult = await pool.query(
       `UPDATE demande_rh 
        SET statut = 'refuse', 
-           approuve_responsable1 = $1,
-           approuve_responsable2 = $2,
-           commentaire_refus = $3,
+           approuve_responsable1 = false,
+           approuve_responsable2 = false,
+           commentaire_refus = $1,
            updated_at = CURRENT_TIMESTAMP 
-       WHERE id = $4
+       WHERE id = $2
        RETURNING *`,
       [
-        approverStates.approuve_responsable1,
-        approverStates.approuve_responsable2,
         commentaire.trim(),
         id
       ]
@@ -6339,8 +6325,8 @@ app.post('/api/demandes/:id/refuser-app', authenticateToken, async (req, res) =>
       ...demande,
       ...updateResult.rows[0],
       statut: 'refuse',
-      approuve_responsable1: approverStates.approuve_responsable1,
-      approuve_responsable2: approverStates.approuve_responsable2,
+      approuve_responsable1: false,
+      approuve_responsable2: false,
       commentaire_refus: commentaire.trim()
     };
 
@@ -6395,6 +6381,7 @@ app.post('/api/demandes/:id/refuser-app', authenticateToken, async (req, res) =>
     res.status(500).json({ success: false, error: 'Erreur lors du refus', details: err.message });
   }
 });
+
 // =========================
 // JOB PLANIFIÉ : RAPPORT HEBDOMADAIRE RH (LUNDI 10H)
 // =========================
