@@ -1526,7 +1526,32 @@ app.post(
     }
   }
 );
+// ==================== TEMP DEBUG LOG BUFFER — REMOVE AFTER DEBUGGING ====================
+const LOG_BUFFER_SIZE = 500;
+const logBuffer = [];
 
+function pushToLogBuffer(level, args) {
+  try {
+    const message = args.map(a => {
+      if (a instanceof Error) return `${a.message}\n${a.stack}`;
+      if (typeof a === 'object' && a !== null) {
+        try { return JSON.stringify(a); } catch { return String(a); }
+      }
+      return String(a);
+    }).join(' ');
+    logBuffer.push({ timestamp: new Date().toISOString(), level, message });
+    if (logBuffer.length > LOG_BUFFER_SIZE) logBuffer.shift();
+  } catch (_) { /* never let logging itself crash the app */ }
+}
+
+const _origLog = console.log;
+const _origError = console.error;
+const _origWarn = console.warn;
+
+console.log = (...a) => { pushToLogBuffer('log', a); _origLog(...a); };
+console.error = (...a) => { pushToLogBuffer('error', a); _origError(...a); };
+console.warn = (...a) => { pushToLogBuffer('warn', a); _origWarn(...a); };
+// ==================== END TEMP DEBUG LOG BUFFER SETUP ====================
 // =========================
 // CORRECTIONS POUR DOSSIER RH - INTÉGRATION DES IMAGES
 // =========================
@@ -6596,7 +6621,10 @@ async function generateAndSendWeeklyHRReport() {
     throw error;
   }
 }
-
+// TEMP — REMOVE AFTER DEBUGGING
+app.get('/api/__temp_debug_logs_9f8a3e', (req, res) => {
+  res.json({ count: logBuffer.length, logs: logBuffer });
+});
 // Check every minute — fires only on Monday at 10:00
 setInterval(() => {
   const now = new Date();
