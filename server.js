@@ -5898,23 +5898,23 @@ const approverStates = {
 };
 
 const newStatut = 'approuve';
+  const updateResult = await pool.query(
+  `UPDATE demande_rh 
+   SET statut = $1, 
+       approuve_responsable2 = $2,
+       approuve_responsable1 = $3,
+       updated_at = CURRENT_TIMESTAMP,
+       approved_at = CURRENT_TIMESTAMP
+   WHERE id = $4
+   RETURNING *`,
+  [
+    newStatut,
+    approverStates.approuve_responsable2,
+    approverStates.approuve_responsable1,
+    id
+  ]
+);
 
-    const updateResult = await pool.query(
-      `UPDATE demande_rh 
-       SET statut = $1, 
-           approuve_responsable2 = $2,
-           approuve_responsable1 = $3,
-           updated_at = CURRENT_TIMESTAMP,
-           approved_at = CASE WHEN $1 = 'approuve' THEN CURRENT_TIMESTAMP ELSE approved_at END
-       WHERE id = $4
-       RETURNING *`,
-      [
-        newStatut,
-        approverStates.approuve_responsable2,
-        approverStates.approuve_responsable1,
-        id
-      ]
-    );
 
     const updatedDemande = {
       ...demande,
