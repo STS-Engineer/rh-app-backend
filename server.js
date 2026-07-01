@@ -5876,34 +5876,28 @@ app.post('/api/demandes/:id/approuver-app', authenticateToken, async (req, res) 
     }
 
     const demande = result.rows[0];
-    const actingLevel = resolveTunisiaDemandeApprover(demande, req.user);
 
-    if (demande.statut !== 'en_attente') {
-      return res.status(400).json({
-        success: false,
-        error: `Cette demande a déjà été traitée (statut: ${demande.statut})`
-      });
-    }
+if (demande.statut !== 'en_attente') {
+  return res.status(400).json({
+    success: false,
+    error: `Cette demande a déjà été traitée (statut: ${demande.statut})`
+  });
+}
 
-    if (!actingLevel) {
-      return res.status(403).json({
-        success: false,
-        error: 'Vous n’êtes pas autorisé à approuver cette demande.'
-      });
-    }
+// ✅ FIX: any authenticated Tunisia tenant user can approve the demande
+if (!isTunisiaTenantUser(req.user)) {
+  return res.status(403).json({
+    success: false,
+    error: 'Vous n’êtes pas autorisé à approuver cette demande.'
+  });
+}
 
-    const approverStates = {
-      approuve_responsable1: demande.approuve_responsable1,
-      approuve_responsable2: demande.approuve_responsable2
-    };
+const approverStates = {
+  approuve_responsable1: true,
+  approuve_responsable2: true
+};
 
-    if (actingLevel === 'responsable1') {
-      approverStates.approuve_responsable1 = true;
-    } else {
-      approverStates.approuve_responsable2 = true;
-    }
-
-    const newStatut = computeTunisiaDemandeStatus(demande, approverStates);
+const newStatut = 'approuve';
 
     const updateResult = await pool.query(
       `UPDATE demande_rh 
