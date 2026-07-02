@@ -771,7 +771,6 @@ function getDemandeDetailsHtml(demande) {
 
 function getDemandeCancellationRecipients(demande) {
   const recipients = [
-    RH_ADMIN_EMAIL,
     demande.mail_responsable1,
     demande.mail_responsable2
   ];
@@ -6030,78 +6029,7 @@ const newStatut = 'approuve';
       joursOuvres = calculerJoursOuvres(demande.date_depart, demande.date_retour);
     }
 
-    // EMAIL À NESRIA - Avec PDF en pièce jointe
-    try {
-      const pdfBuffer = await genererPDFDemandeApprouvee(demande, joursOuvres);
-      const pdfFileName = `Demande_RH_${demande.nom}_${demande.prenom}_${Date.now()}.pdf`;
-
-      const mailOptions = {
-        from: {
-          name: EMAIL_FROM_NAME,
-          address: EMAIL_FROM
-        },
-        to: 'nesria.ibrahim@avocarbon.com',
-        subject: `📋 Demande RH approuvée - ${demande.prenom} ${demande.nom}`,
-        html: `
-          <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-            <h2 style="color: #1976d2; border-bottom: 3px solid #1976d2; padding-bottom: 10px;">
-              📋 Nouvelle demande RH approuvée
-            </h2>
-            <div style="background: #e3f2fd; padding: 20px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #1976d2;">
-              <p style="margin: 0; color: #1565c0; font-weight: 500;">
-                ℹ️ Une demande RH vient d'être approuvée et nécessite votre attention.
-              </p>
-            </div>
-            <div style="background: #f8fafc; padding: 20px; border-radius: 8px; margin: 20px 0;">
-              <p><strong>Employé:</strong> ${demande.prenom} ${demande.nom}</p>
-              <p><strong>Matricule:</strong> ${demande.matricule || 'Non spécifié'}</p>
-              <p><strong>Type de demande:</strong> ${typeLabel}</p>
-              <p><strong>Date de départ:</strong> ${formatDateShortApp(demande.date_depart)}</p>
-              ${joursOuvres > 0 ? `<p><strong>Nombre de jours ouvrés:</strong> <span style="color: #1976d2; font-size: 18px; font-weight: bold;">${joursOuvres} jour${joursOuvres > 1 ? 's' : ''}</span></p>` : ''}
-            </div>
-            <p style="color: #6b7280; font-size: 14px;">
-              📎 Veuillez consulter le fichier PDF joint pour tous les détails.
-            </p>
-          </div>
-        `,
-        attachments: [
-          {
-            filename: pdfFileName,
-            content: pdfBuffer,
-            contentType: 'application/pdf'
-          }
-        ]
-      };
-
-      await emailTransporter.sendMail(mailOptions);
-      console.log(`📧 PDF envoyé à Nesria: ${pdfFileName} (${pdfBuffer.length} octets)`);
-
-    } catch (pdfError) {
-      console.error('❌ Erreur génération/envoi PDF:', pdfError);
-      // Fallback : envoyer un email sans PDF en cas d'erreur
-      try {
-        const htmlRH = `
-          <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-            <h2 style="color: #1976d2; border-bottom: 3px solid #1976d2; padding-bottom: 10px;">
-              📋 Demande RH approuvée
-            </h2>
-            <div style="background: #f8fafc; padding: 20px; border-radius: 8px; margin: 20px 0;">
-              <p><strong>Employé:</strong> ${demande.prenom} ${demande.nom}</p>
-              <p><strong>Matricule:</strong> ${demande.matricule || 'Non spécifié'}</p>
-              <p><strong>Type de demande:</strong> ${typeLabel}</p>
-              <p><strong>Date de départ:</strong> ${formatDateShortApp(demande.date_depart)}</p>
-            </div>
-            <p style="color: #6b7280; font-size: 14px;">Notification automatique du système RH.</p>
-          </div>
-        `;
-        await sendEmail('nesria.ibrahim@avocarbon.com', 
-          `📋 Demande RH approuvée - ${demande.prenom} ${demande.nom}`, 
-          htmlRH);
-      } catch (fallbackError) {
-        console.error('❌ Erreur même en fallback:', fallbackError);
-      }
-    }
-
+   
     console.log(`✅ Demande ${id} approuvée depuis l'application`);
     res.json({
       success: true,
